@@ -52,12 +52,16 @@ jobs:
             curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" -o rel.json
             echo "Arquivos da release:"
             jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"' rel.json
-            URL=$(jq -r '[.assets[] | select(.name | test("\\.(zip|tar\\.gz|tgz|tar\\.bz2|tbz2)$"; "i"))] | sort_by(-.size) | .[0].browser_download_url // empty' rel.json)
+            URL=$(jq -r '[.assets[] | select(.name | test("\\.(zip|tar\\.gz|tgz|tar\\.bz2|tbz2)$"; "i"))] | sort_by(-.size) | .[0].url // empty' rel.json)
             [ -n "$URL" ] || { echo "ERRO: nenhum .zip/.tar na release"; exit 1; }
           fi
           echo "Baixando: $URL"
           NAME=$(basename "${URL%%\?*}")
-          curl -L --fail -o "sdk_download" "$URL"
+          if [[ "$URL" == https://api.github.com/* ]]; then
+            curl -L --fail -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "sdk_download" "$URL" || { echo "ERRO: 404/acesso negado em $URL (release apagada, repositório privado ou link errado)"; exit 1; }
+          else
+            curl -L --fail -o "sdk_download" "$URL" || { echo "ERRO: não consegui baixar $URL (404 = link errado, release apagada ou repositório privado)"; exit 1; }
+          fi
           mkdir -p "$RUNNER_TEMP/airsdk"
           case "${NAME,,}" in
             *.tar.bz2|*.tbz2|*.tar.gz|*.tgz) tar -xf sdk_download -C "$RUNNER_TEMP/airsdk" ;;
