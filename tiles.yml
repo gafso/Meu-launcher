@@ -1,0 +1,79 @@
+name: Melhorar tiles do mapa
+
+on:
+  workflow_dispatch:
+    inputs:
+      escala:
+        description: "0 = só BAIXAR os originais (em zips de 100); 1 = mesmo tamanho + nitidez; 2 = dobro"
+        required: true
+        default: "2"
+      limite:
+        description: "Quantos tiles processar (20 = teste; 0 = todos)"
+        required: true
+        default: "20"
+
+jobs:
+  tiles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Processar
+        env:
+          ESCALA: ${{ github.event.inputs.escala }}
+          LIMITE: ${{ github.event.inputs.limite }}
+        run: |
+          pip install pillow requests
+          python - <<'PY'
+          import os, re, io, requests
+          from PIL import Image, ImageFilter
+
+          escala = float(os.environ["ESCALA"])
+          limite = int(os.environ["LIMITE"])
+          arq = "_pedidos.txt"
+          if not os.path.exists(arq):
+              raise SystemExit("ERRO: suba o _pedidos.txt na raiz do repositório")
+          rx = re.compile(r"https?://\S+/mapmaterial/land/10000/(tile_(\d+)_(\d+))(?:_[0-9a-f]{8})?\.jpg")
+          tiles = {}
+          for linha in open(arq, encoding="utf-8", errors="ignore"):
+              m = rx.search(linha.strip())
+              if m: tiles[m.group(1)] = m.group(0)
+          nomes = sorted(tiles, key=lambda n: (int(n.split("_")[1]), int(n.split("_")[2])))
+          if limite > 0: nomes = nomes[:limite]
+          print(len(tiles), "tiles na lista; processando", len(nomes))
+          os.makedirs("saida", exist_ok=True)
+          os.makedirs("orig", exist_ok=True)
+          tam = None
+          for n in nomes:
+              r = requests.get(tiles[n], timeout=60)
+              r.raise_for_status()
+              im = Image.open(io.BytesIO(r.content)).convert("RGB")
+              if tam is None:
+                  tam = im.size
+                  print("Tamanho original do tile:", tam)
+              if escala == 0:
+                  open(f"orig/{n}.jpg", "wb").write(r.content)   # original, sem mexer
+                  continue
+              if escala != 1:
+                  im = im.resize((round(im.width * escala), round(im.height * escala)), Image.LANCZOS)
+              im = im.filter(ImageFilter.UnsharpMask(radius=1.2, percent=70, threshold=2))
+              im.save(f"saida/{n}.jpg", quality=92)
+          if escala == 0:
+              import zipfile
+              for i in range(0, len(nomes), 100):
+                  with zipfile.ZipFile(f"saida/parte_{i//100+1:02d}.zip", "w") as z:
+                      for n in nomes[i:i+100]:
+                          z.write(f"orig/{n}.jpg", f"{n}.jpg")
+              print("Originais:", len(nomes), "tiles em zips de 100 dentro de ./saida")
+          else:
+              print("Pronto:", len(nomes), "tiles em ./saida")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiles-resultado
+          path: saida/
