@@ -90,6 +90,11 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > keystore.p12
             echo "STOREPASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+          elif [ -f keystore.p12 ]; then
+            # Chave fixa que vem junto do projeto: todo APK novo é assinado com ela,
+            # então o Android instala por cima do antigo (sem desinstalar).
+            echo "Usando a keystore.p12 do projeto"
+            echo "STOREPASS=meulauncher" >> "$GITHUB_ENV"
           else
             keytool -genkeypair -keystore keystore.p12 -storetype PKCS12 -storepass changeit \
               -keypass changeit -alias launcher -keyalg RSA -keysize 2048 -validity 9000 \
@@ -99,6 +104,8 @@ jobs:
 
       - name: Compilar
         working-directory: ${{ env.PROJ }}
+        env:
+          VERSION_NUMBER: 1.0.${{ github.run_number }}
         run: bash build.sh
 
       - uses: actions/upload-artifact@v4
