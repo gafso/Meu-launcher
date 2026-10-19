@@ -1,0 +1,211 @@
+name: Estilizar mapa completo
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "previas = gera o mapa inteiro em 5 estilos para você escolher; final = gera os tiles"
+        required: true
+        type: choice
+        default: previas
+        options:
+          - previas
+          - final
+      intensidade:
+        description: "(só no modo final) 0.6 suave, 1.0 padrão, 1.4 forte"
+        required: false
+        default: "1.0"
+      tom:
+        description: "(só no modo final) neutro, quente ou frio"
+        required: false
+        type: choice
+        default: neutro
+        options:
+          - neutro
+          - quente
+          - frio
+
+jobs:
+  mapa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install opencv-python-headless numpy requests
+
+      - name: Criar o script de estilo
+        run: |
+          cat > estilizar.py <<'EOF_PY'
+          #!/usr/bin/env python3
+          """Estiliza o mapa inteiro (cor, contraste, clareza, brilho suave) sem emendas entre os tiles.
+          Uso: estilizar.py PASTA_ORIGINAIS PASTA_SAIDA [intensidade=1.0]
+          Os tiles precisam se chamar tile_X_Y.jpg. Mantém o tamanho de cada tile."""
+          import sys, os, re, glob
+          import cv2, numpy as np
+
+          def blur_big(img, sigma, s=4):
+              small = cv2.resize(img, None, fx=1/s, fy=1/s, interpolation=cv2.INTER_AREA)
+              small = cv2.GaussianBlur(small, (0, 0), max(sigma / s, 0.5))
+              return cv2.resize(small, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_CUBIC)
+
+          TONS = {
+              'neutro': ([0.020, -0.004, 0.008], [-0.012, 0.003, 0.016]),   # sombras (B,G,R), luzes (B,G,R)
+              'quente': ([0.000, 0.000, 0.012], [-0.035, 0.010, 0.045]),
+              'frio':   ([0.045, 0.006, -0.008], [0.025, 0.010, -0.012]),
+          }
+
+          def estilizar(big, k, tom='neutro'):
+              """big: float32 BGR 0..1 (mapa inteiro). k: intensidade."""
+              lum = 0.114 * big[..., 0] + 0.587 * big[..., 1] + 0.299 * big[..., 2]
+              # 1) clareza: realça volume/detalhe em duas escalas (luz mais "moderna")
+              d1 = lum - blur_big(lum, 24)
+              d2 = lum - blur_big(lum, 7, s=2)
+              big += (0.45 * k * d1 + 0.25 * k * d2)[..., None]
+              np.clip(big, 0, 1, out=big)
+              # 2) curva em S: mais contraste sem estourar
+              a = min(0.38 * k, 0.8)
+              big[:] = big * (1 - a) + (big * big * (3 - 2 * big)) * a
+              # 3) vibração: puxa cores apagadas, preserva as que já são fortes
+              hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
+              s = hsv[..., 1]
+              gate = np.clip((s - 0.10) / 0.22, 0, 1)             # cinzas/névoa não ganham cor
+              gate = cv2.GaussianBlur(gate, (0, 0), 3)             # transição suave (sem manchas)
+              hsv[..., 1] = np.clip(s + gate * (1 - s) * 0.30 * k + s * 0.03 * k, 0, 1)
+              big[:] = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+              del hsv
+              lum = 0.114 * big[..., 0] + 0.587 * big[..., 1] + 0.299 * big[..., 2]
+              # 4) brilho suave nas luzes (bloom)
+              hl = np.clip((lum - 0.68) / 0.32, 0, 1) ** 1.4
+              glow = blur_big(big * hl[..., None], 16)
+              glow[..., 2] *= 1.05; glow[..., 0] *= 0.95          # leve calor nas luzes
+              big[:] = 1 - (1 - big) * (1 - np.clip(glow * 0.35 * k, 0, 1))
+              # 5) graduação: sombras mais frias/violeta, luzes mais quentes
+              w_sh = ((1 - lum) ** 2)[..., None]; w_hi = (lum ** 2)[..., None]
+              sh, hi = TONS[tom]
+              big += w_sh * np.array(sh, np.float32) * k    # B,G,R
+              big += w_hi * np.array(hi, np.float32) * k
+              # 6) nitidez fina
+              bl = cv2.GaussianBlur(big, (0, 0), 1.3)
+              big += (big - bl) * 0.50 * k
+              big += np.random.default_rng(7).normal(0, 0.0035, big.shape).astype(np.float32)   # quebra faixas na névoa
+              np.clip(big, 0, 1, out=big)
+              return big
+
+          def carregar(src):
+              tiles = {}
+              for f in glob.glob(os.path.join(src, "tile_*_*.jpg")):
+                  m = re.match(r"tile_(\d+)_(\d+)\.jpg$", os.path.basename(f))
+                  if m: tiles[(int(m[1]), int(m[2]))] = f
+              if not tiles: raise SystemExit("nenhum tile_X_Y.jpg em " + src)
+              first = cv2.imread(next(iter(tiles.values())))
+              th, tw = first.shape[:2]
+              cols = max(x for x, _ in tiles) + 1; rows = max(y for _, y in tiles) + 1
+              print(f"{len(tiles)} tiles, {tw}x{th} cada, grade {cols}x{rows}")
+              big = np.zeros((rows * th, cols * tw, 3), np.float32)
+              present = np.zeros((rows * th, cols * tw), bool)
+              shapes = {}; mean_acc = np.zeros(3); n = 0
+              for (x, y), f in tiles.items():
+                  im = cv2.imread(f)
+                  im = cv2.fastNlMeansDenoisingColored(im, None, 2, 2, 5, 15)   # tira blocos do JPEG, leve
+                  h, w = im.shape[:2]; shapes[(x, y)] = (h, w)
+                  big[y*th:y*th+h, x*tw:x*tw+w] = im.astype(np.float32) / 255.0
+                  present[y*th:y*th+h, x*tw:x*tw+w] = True
+                  mean_acc += im.reshape(-1, 3).mean(0) / 255.0; n += 1
+              big[~present] = (mean_acc / n).astype(np.float32)   # buracos: cor média
+              return big, shapes, th, tw
+
+          VARIANTES = [("1_suave", 0.6, "neutro"), ("2_padrao", 1.0, "neutro"), ("3_forte", 1.4, "neutro"),
+                       ("4_quente_dourado", 1.0, "quente"), ("5_frio_mistico", 1.0, "frio")]
+
+          def salvar_previa(img, nome, dst):
+              H, W = img.shape[:2]
+              sc = min(1.0, 2400 / W)
+              pv = cv2.resize(img, (int(W * sc), int(H * sc)), interpolation=cv2.INTER_AREA)
+              cv2.imwrite(os.path.join(dst, f"mapa_{nome}.jpg"), (np.clip(pv, 0, 1) * 255 + 0.5).astype(np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 88])
+              cy, cx = H // 2, W // 2                      # recorte no tamanho real (centro do mapa)
+              crop = img[max(0, cy - 400):cy + 400, max(0, cx - 600):cx + 600]
+              cv2.imwrite(os.path.join(dst, f"detalhe_{nome}.jpg"), (np.clip(crop, 0, 1) * 255 + 0.5).astype(np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+          def main():
+              args = [a for a in sys.argv[1:] if not a.startswith("--")]
+              previa = "--previa" in sys.argv
+              src, dst = args[0], args[1]
+              k = float(args[2]) if len(args) > 2 else 1.0
+              tom = args[3] if len(args) > 3 else "neutro"
+              os.makedirs(dst, exist_ok=True)
+              big, shapes, th, tw = carregar(src)
+              if previa:
+                  salvar_previa(big.copy(), "0_original", dst)
+                  for nome, kk, tt in VARIANTES:
+                      b = big.copy(); estilizar(b, kk, tt); salvar_previa(b, nome, dst); del b
+                      print("previa", nome)
+                  return
+              estilizar(big, k, tom)
+              for (x, y), (h, w) in shapes.items():
+                  out = (big[y*th:y*th+h, x*tw:x*tw+w] * 255 + 0.5).astype(np.uint8)
+                  cv2.imwrite(os.path.join(dst, f"tile_{x}_{y}.jpg"), out, [cv2.IMWRITE_JPEG_QUALITY, 92])
+              print("gravados", len(shapes), "tiles em", dst)
+
+          if __name__ == "__main__":
+              main()
+          EOF_PY
+          python -m py_compile estilizar.py
+
+      - name: Baixar os tiles originais
+        run: |
+          python - <<'PY'
+          import os, re, requests
+          from concurrent.futures import ThreadPoolExecutor
+          if not os.path.exists("_pedidos.txt"):
+              raise SystemExit("ERRO: suba o _pedidos.txt na raiz do repositório")
+          rx = re.compile(r"(https?://\S+/mapmaterial/land/10000/)tile_(\d+)_(\d+)(?:_[0-9a-f]{8})?\.jpg")
+          urls, base = {}, None
+          for linha in open("_pedidos.txt", encoding="utf-8", errors="ignore"):
+              m = rx.search(linha.strip())
+              if m:
+                  base = m.group(1)
+                  urls[(int(m.group(2)), int(m.group(3)))] = m.group(0)
+          if not urls: raise SystemExit("ERRO: nenhum tile do mapa 10000 no _pedidos.txt")
+          cols = max(x for x, _ in urls) + 1; rows = max(y for _, y in urls) + 1
+          print(f"{len(urls)} tiles na lista; grade {cols}x{rows}")
+          os.makedirs("orig", exist_ok=True)
+          def baixar(xy):
+              x, y = xy
+              u = urls.get(xy) or f"{base}tile_{x}_{y}.jpg"     # faltou na lista: tenta sem hash
+              try:
+                  r = requests.get(u, timeout=60)
+                  if r.status_code == 200 and r.content[:2] == b"\xff\xd8":
+                      open(f"orig/tile_{x}_{y}.jpg", "wb").write(r.content)
+                      return xy, True
+              except Exception:
+                  pass
+              return xy, False
+          todos = [(x, y) for x in range(cols) for y in range(rows)]
+          with ThreadPoolExecutor(16) as ex:
+              res = list(ex.map(baixar, todos))
+          falt = [xy for xy, ok in res if not ok]
+          print("baixados:", len(todos) - len(falt), "| sem arquivo:", len(falt))
+          if falt: print("faltando (ficam originais):", falt[:40])
+          PY
+
+      - name: Gerar
+        env:
+          MODO: ${{ github.event.inputs.modo }}
+          INT: ${{ github.event.inputs.intensidade }}
+          TOM: ${{ github.event.inputs.tom }}
+        run: |
+          if [ "$MODO" = "previas" ]; then
+            python estilizar.py orig saida --previa
+          else
+            python estilizar.py orig saida "$INT" "$TOM"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapa-${{ github.event.inputs.modo }}
+          path: saida/
