@@ -1,0 +1,86 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_url:
+        description: "Release do AIR SDK 51 (página da release OU link direto do arquivo, qualquer nome)"
+        required: true
+        default: "https://github.com/gafso/sdk/releases/tag/Sdk"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extrair o projeto
+        run: unzip -q launcher.zip
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Baixar o AIR SDK
+        env:
+          SDK_URL: ${{ github.event.inputs.sdk_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          URL="$SDK_URL"
+          if [[ "$URL" =~ github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+) ]]; then
+            api="https://api.github.com/repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/releases/tags/${BASH_REMATCH[3]}"
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" -o rel.json
+            echo "Arquivos da release:"
+            jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"' rel.json
+            URL=$(jq -r '[.assets[] | select(.name | test("\\.(zip|tar\\.gz|tgz|tar\\.bz2|tbz2)$"; "i"))] | sort_by(-.size) | .[0].browser_download_url // empty' rel.json)
+            [ -n "$URL" ] || { echo "ERRO: nenhum .zip/.tar na release"; exit 1; }
+          fi
+          echo "Baixando: $URL"
+          NAME=$(basename "${URL%%\?*}")
+          curl -L --fail -o "sdk_download" "$URL"
+          mkdir -p "$RUNNER_TEMP/airsdk"
+          case "${NAME,,}" in
+            *.tar.bz2|*.tbz2|*.tar.gz|*.tgz) tar -xf sdk_download -C "$RUNNER_TEMP/airsdk" ;;
+            *) unzip -q sdk_download -d "$RUNNER_TEMP/airsdk" ;;
+          esac
+          if [ ! -f "$RUNNER_TEMP/airsdk/air-sdk-description.xml" ]; then
+            f=$(find "$RUNNER_TEMP/airsdk" -maxdepth 3 -name air-sdk-description.xml | head -1)
+            [ -n "$f" ] || { echo "ERRO: air-sdk-description.xml não encontrado: esse arquivo não é o AIR SDK"; exit 1; }
+            d=$(dirname "$f")
+            mv "$d" "$RUNNER_TEMP/airsdk_real" && rm -rf "$RUNNER_TEMP/airsdk" && mv "$RUNNER_TEMP/airsdk_real" "$RUNNER_TEMP/airsdk"
+          fi
+          cat "$RUNNER_TEMP/airsdk/air-sdk-description.xml"
+          echo "AIR_SDK=$RUNNER_TEMP/airsdk" >> "$GITHUB_ENV"
+
+      - name: Localizar android.jar
+        run: |
+          jar_path=$(ls -d "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)
+          echo "Usando $jar_path"
+          echo "ANDROID_JAR=$jar_path" >> "$GITHUB_ENV"
+
+      - name: Chave de assinatura
+        working-directory: launcher
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > keystore.p12
+            echo "STOREPASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -keystore keystore.p12 -storetype PKCS12 -storepass changeit \
+              -keypass changeit -alias launcher -keyalg RSA -keysize 2048 -validity 9000 \
+              -dname "CN=MeuLauncher"
+            echo "STOREPASS=changeit" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compilar
+        working-directory: launcher
+        run: bash build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MeuLauncher-apk
+          path: launcher/build/MeuLauncher.apk
