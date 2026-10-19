@@ -6,7 +6,7 @@ on:
       sdk_url:
         description: "Release do AIR SDK 51 (página da release OU link direto do arquivo, qualquer nome)"
         required: true
-        default: "https://github.com/gafso/sdk/releases/tag/Sdk"
+        default: "https://github.com/gafso/sdk/releases/tag/Sdkatt"
 
 jobs:
   build:
