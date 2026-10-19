@@ -15,7 +15,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Extrair o projeto
-        run: unzip -q launcher.zip
+        run: |
+          # Aceita o launcher.zip na raiz do repositório, ou os arquivos soltos / em subpasta.
+          if [ -f launcher.zip ]; then
+            mkdir -p proj && unzip -q -o launcher.zip -d proj
+          else
+            mkdir -p proj && cp -r . proj/ 2>/dev/null || true
+          fi
+          B=$(find proj -name build.sh -not -path '*/.git/*' | head -1)
+          if [ -z "$B" ]; then
+            echo "ERRO: build.sh não encontrado. Arquivos que existem no repositório:"
+            find . -maxdepth 3 -not -path './.git/*' | head -80
+            echo "--- dentro do launcher.zip ---"
+            unzip -l launcher.zip 2>&1 | head -60
+            exit 1
+          fi
+          D=$(dirname "$B")
+          echo "Projeto em: $D"
+          echo "PROJ=$GITHUB_WORKSPACE/$D" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v4
         with:
@@ -29,6 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           URL="$SDK_URL"
+          # Se for a página de uma release, acha sozinho o arquivo do SDK (qualquer nome).
           if [[ "$URL" =~ github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+) ]]; then
             api="https://api.github.com/repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/releases/tags/${BASH_REMATCH[3]}"
             curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" -o rel.json
@@ -45,6 +63,7 @@ jobs:
             *.tar.bz2|*.tbz2|*.tar.gz|*.tgz) tar -xf sdk_download -C "$RUNNER_TEMP/airsdk" ;;
             *) unzip -q sdk_download -d "$RUNNER_TEMP/airsdk" ;;
           esac
+          # Se o arquivo tiver uma pasta por dentro, entra nela.
           if [ ! -f "$RUNNER_TEMP/airsdk/air-sdk-description.xml" ]; then
             f=$(find "$RUNNER_TEMP/airsdk" -maxdepth 3 -name air-sdk-description.xml | head -1)
             [ -n "$f" ] || { echo "ERRO: air-sdk-description.xml não encontrado: esse arquivo não é o AIR SDK"; exit 1; }
@@ -61,11 +80,13 @@ jobs:
           echo "ANDROID_JAR=$jar_path" >> "$GITHUB_ENV"
 
       - name: Chave de assinatura
-        working-directory: launcher
+        working-directory: ${{ env.PROJ }}
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
           KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
         run: |
+          # Se você definir os secrets KEYSTORE_B64 e KEYSTORE_PASS, a mesma chave é usada
+          # sempre (necessário para atualizar o app por cima sem desinstalar).
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > keystore.p12
             echo "STOREPASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
@@ -77,10 +98,10 @@ jobs:
           fi
 
       - name: Compilar
-        working-directory: launcher
+        working-directory: ${{ env.PROJ }}
         run: bash build.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: MeuLauncher-apk
-          path: launcher/build/MeuLauncher.apk
+          path: ${{ env.PROJ }}/build/MeuLauncher.apk
