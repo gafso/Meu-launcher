@@ -108,6 +108,12 @@ jobs:
           VERSION_NUMBER: 1.0.${{ github.run_number }}
         run: bash build.sh
 
+      - name: Assinatura do APK (a impressão digital tem que ser a MESMA em todo build)
+        run: |
+          echo "### Assinatura do APK" >> "$GITHUB_STEP_SUMMARY"
+          keytool -printcert -jarfile "${{ env.PROJ }}/build/MeuLauncher.apk" 2>&1 | grep -E "Owner|SHA256" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo "Versão do app: 1.0.${{ github.run_number }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: MeuLauncher-apk
