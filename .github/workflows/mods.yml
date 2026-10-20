@@ -12,12 +12,22 @@ on:
         description: "Grade do mapa (opcional). Ex.: 30x20  ou  10000=30x20"
         required: false
         default: ""
+      imagem_url:
+        description: "Opcional: link direto de uma imagem grande (ex.: asset de uma Release) para salvar em personalizados/"
+        required: false
+        default: ""
+      imagem_nome:
+        description: "Nome para salvar a imagem baixada (ex.: mapa_10000.png ou loading_bg.jpg)"
+        required: false
+        default: "mapa_10000.png"
 
 jobs:
   mods:
     runs-on: ubuntu-latest
     env:
       GRADE: ${{ github.event.inputs.grade }}
+      IMAGEM_URL: ${{ github.event.inputs.imagem_url }}
+      IMAGEM_NOME: ${{ github.event.inputs.imagem_nome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +41,13 @@ jobs:
           mkdir -p ferramentas
           unzip -q -o launcher.zip -d _proj || true
           cp -rf _proj/launcher/ferramentas/. ferramentas/ || true
+
+      - name: Baixar imagem grande (se informada)
+        if: ${{ github.event.inputs.imagem_url != '' }}
+        run: |
+          mkdir -p personalizados
+          curl -L --fail --retry 3 -o "personalizados/${IMAGEM_NOME}" "${IMAGEM_URL}"
+          ls -lh personalizados/
 
       - name: Preparar
         run: python3 ferramentas/mods.py preparar
