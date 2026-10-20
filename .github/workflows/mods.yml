@@ -1,0 +1,37 @@
+name: Gerar mods
+
+on:
+  workflow_dispatch:
+    inputs:
+      acao:
+        description: "analisar = relatório | baixar = originais + mapa inteiro p/ editar | gerar = aplica personalizados/"
+        type: choice
+        options: [analisar, baixar, gerar]
+        default: analisar
+      grade:
+        description: "Grade do mapa (opcional). Ex.: 30x20  ou  10000=30x20,10010=18x12"
+        required: false
+        default: ""
+
+jobs:
+  mods:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preparar
+        run: |
+          pip install pillow
+          if [ ! -f ferramentas/mods.py ] && [ -f launcher.zip ]; then unzip -q -o launcher.zip -d _proj; fi
+          M=$(find . -name mods.py -path '*ferramentas*' -not -path './.git/*' | head -1)
+          [ -n "$M" ] || { echo "ERRO: mods.py não encontrado. Suba o launcher.zip novo."; exit 1; }
+          echo "MODS_PY=$M" >> "$GITHUB_ENV"
+          P=$(find . -name _pedidos.txt -not -path './.git/*' -not -path './_proj/*' | head -1)
+          [ -n "$P" ] || { echo "ERRO: suba o _pedidos.txt (de Android/data/<app>/files/mods/) na raiz do repositório."; exit 1; }
+          [ "$P" = "./_pedidos.txt" ] || cp "$P" _pedidos.txt
+          F=$(find . -name _faltando.txt -not -path './.git/*' | head -1)
+          if [ -n "$F" ] && [ "$F" != "./_faltando.txt" ]; then cp "$F
