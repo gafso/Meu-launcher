@@ -4,12 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       acao:
-        description: "analisar = relatorio | baixar = originais + mapa inteiro | gerar = aplica personalizados/"
+        description: "analisar = relatorio | baixar = originais + mapa inteiro | gerar = aplica personalizados/ | swf = identifica castelo (imagens dos .swf)"
         type: choice
-        options: [analisar, baixar, gerar]
+        options: [analisar, baixar, gerar, swf]
         default: analisar
       grade:
         description: "Grade do mapa (opcional). Ex.: 30x20  ou  10000=30x20"
+        required: false
+        default: ""
+      swf_urls:
+        description: "So para a acao swf (opcional): links de .swf separados por espaco. Vazio = os do castelo"
         required: false
         default: ""
       imagem_url:
@@ -26,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GRADE: ${{ github.event.inputs.grade }}
+      SWF_URLS: ${{ github.event.inputs.swf_urls }}
       IMAGEM_URL: ${{ github.event.inputs.imagem_url }}
       IMAGEM_NOME: ${{ github.event.inputs.imagem_nome }}
     steps:
@@ -40,7 +45,7 @@ jobs:
           pip install pillow
           mkdir -p ferramentas
           unzip -q -o launcher.zip -d _proj || true
-          cp -rf _proj/launcher/ferramentas/. ferramentas/ || true
+          cp -rn _proj/launcher/ferramentas/. ferramentas/ || true
 
       - name: Baixar imagem grande (se informada)
         if: ${{ github.event.inputs.imagem_url != '' }}
@@ -48,6 +53,11 @@ jobs:
           mkdir -p personalizados
           curl -L --fail --retry 3 -o "personalizados/${IMAGEM_NOME}" "${IMAGEM_URL}"
           ls -lh personalizados/
+          file "personalizados/${IMAGEM_NOME}"
+          if ! file "personalizados/${IMAGEM_NOME}" | grep -qi "image"; then
+            echo "ERRO: o arquivo baixado NAO e uma imagem (provavelmente o link e da pagina da release, nao do arquivo). Primeiros bytes:"
+            head -c 300 "personalizados/${IMAGEM_NOME}"; exit 1
+          fi
 
       - name: Preparar
         run: python3 ferramentas/mods.py preparar
