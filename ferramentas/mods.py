@@ -771,9 +771,150 @@ def cmd_castelo(args):
         sys.exit(1)
 
 
+PREDIOS_PADRAO = [
+    "https://res1011oas.creaction-network.com/images/neizhengting_425254ff.swf",      # Prefeitura
+    "https://res1011oas.creaction-network.com/images/bojinshiyanshi_92701ed3.swf",    # Laboratorio de Platina
+    "https://res1011oas.creaction-network.com/images/mofalvguan_242000c6.swf",        # Bar da Fantasia
+    "https://res1011oas.creaction-network.com/images/wuxianta_6643c199.swf",          # Labirinto
+    "https://res1011oas.creaction-network.com/images/home_c68d9bce.swf",              # Residencia
+    "https://res1011oas.creaction-network.com/images/chuansong.swf",                  # Transmissor
+    "https://res1011oas.creaction-network.com/images/binyin_a10009a1.swf",            # Quartel
+    "https://res1011oas.creaction-network.com/images/shenxueyuan_151a8e94.swf",       # Santuario
+]
+
+
+import numpy as np
+
+def recolor_fogo(im):
+    """Troca o tema do prédio para fogo/lava: azuis e verdes viram vermelho-alaranjado/brasa, escurece um pouco."""
+    im = im.convert("RGBA")
+    rgb = im.convert("RGB")
+    a = np.asarray(im)[:, :, 3]
+    hsv = np.asarray(rgb.convert("HSV")).astype(np.float32)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    # H em 0..255 (360 graus = 256)
+    green = (h >= 30) & (h < 96)          # 42..135 graus (verdes, vegetação)
+    blue = (h >= 96) & (h < 215)          # 135..300 graus (ciano, azul, violeta)
+    nh = h.copy(); ns = s.copy(); nv = v.copy()
+    # azul/ciano -> vermelho-laranja, mantém variação leve
+    t = np.clip((h - 96) / 119.0, 0, 1)
+    nh = np.where(blue, 3 + t * 14, nh)               # 4..24 graus
+    ns = np.where(blue, np.clip(s * 1.05 + 20, 0, 255), ns)
+    nv = np.where(blue, v * 0.88, nv)
+    # verde -> marrom-brasa seco
+    nh = np.where(green, 14 + (h - 30) * 0.12, nh)
+    ns = np.where(green, s * 0.75, ns)
+    nv = np.where(green, v * 0.72, nv)
+    # quentes (laranja/amarelo/vermelho): reforça calor
+    warm = ~(green | blue)
+    ns = np.where(warm, np.clip(s * 1.08, 0, 255), ns)
+    nv = np.where(warm, v * 0.95, nv)
+    out = np.stack([nh, ns, nv], axis=2).clip(0, 255).astype(np.uint8)
+    res = Image.fromarray(out, "HSV").convert("RGB")
+    # brilho quente leve nas partes claras (brasa)
+    arr = np.asarray(res).astype(np.float32)
+    lum = arr.mean(axis=2, keepdims=True) / 255.0
+    glow = np.array([40, 8, -10], dtype=np.float32)[None, None, :] * (lum ** 2)
+    arr = np.clip(arr + glow, 0, 255).astype(np.uint8)
+    r = Image.fromarray(arr, "RGB").convert("RGBA")
+    r.putalpha(Image.fromarray(a, "L"))
+    return r
+
+
+def cmd_predios(args):
+    """Troca as imagens dos predios do castelo DENTRO dos swfs.
+    - Se existir personalizados/predios/<swf>_<id>.png (ex.: binyin_1.png) usa essa imagem;
+    - senao recolore a original para o tema fogo.
+    Os originais de cada imagem sao salvos em saida_mods/predios_originais/ (para voce usar como base)."""
+    import subprocess
+    jar = garantir_ffdec()
+    urls = args.swf.split() if getattr(args, "swf", "") else PREDIOS_PADRAO
+    pers = os.path.join(PERS, "predios")
+    tmp = os.path.join(SAIDA, "_tmp_predios")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    os.makedirs(MODS, exist_ok=True)
+    origs = os.path.join(SAIDA, "predios_originais")
+    os.makedirs(origs, exist_ok=True)
+    java = ["java", "-Djava.awt.headless=true", "-jar", jar]
+    relatorio, feitos = [], 0
+
+    def imagens(pasta):
+        out = []
+        if os.path.isdir(pasta):
+            for f in os.listdir(pasta):
+                m = re.match(r"^(\d+)(?:_.*)?\.(png|jpg|jpeg|gif)$", f, re.I)
+                if m:
+                    out.append((int(m.group(1)), f))
+        return sorted(out)
+
+    for url in urls:
+        nome = url.split("?")[0].split("/")[-1]
+        base = re.sub(r"_[0-9a-fA-F]{8}$", "", os.path.splitext(nome)[0])
+        dest = os.path.join(ORIG, "swf", nome)
+        if not baixar_url(url, dest):
+            relatorio.append(f"{nome}: nao baixou")
+            continue
+        exp = os.path.join(tmp, base + "_orig")
+        subprocess.run(java + ["-export", "image", exp, dest], capture_output=True, text=True, timeout=900)
+        achadas = imagens(exp)
+        if not achadas:
+            relatorio.append(f"{nome}: sem imagens")
+            continue
+        pares, n_pers, n_cor = [], 0, 0
+        for idn, f in achadas:
+            orig = Image.open(os.path.join(exp, f)).convert("RGBA")
+            orig.save(os.path.join(origs, f"{base}_{idn}.png"))
+            novo = None
+            for ext in ("png", "jpg", "jpeg"):
+                cand = os.path.join(pers, f"{base}_{idn}.{ext}")
+                if os.path.exists(cand):
+                    novo = Image.open(cand).convert("RGBA")
+                    if novo.size != orig.size:
+                        novo = novo.resize(orig.size, Image.LANCZOS)
+                    n_pers += 1
+                    break
+            if novo is None:
+                if getattr(args, "tema", "fogo") == "nenhum":
+                    continue
+                novo = recolor_fogo(orig)
+                n_cor += 1
+            png = os.path.join(tmp, f"{base}_{idn}.png")
+            novo.save(png)
+            pares += [str(idn), png]
+        if not pares:
+            relatorio.append(f"{nome}: nada a trocar")
+            continue
+        saida = os.path.join(MODS, nome)
+        r = subprocess.run(java + ["-replace", dest, saida] + pares, capture_output=True, text=True, timeout=1200)
+        print((r.stdout or "")[-400:], (r.stderr or "")[-400:])
+        if not os.path.exists(saida) or os.path.getsize(saida) == 0:
+            relatorio.append(f"{nome}: FALHOU ao gerar o swf")
+            continue
+        chk = os.path.join(tmp, base + "_novo")
+        subprocess.run(java + ["-export", "image", chk, saida], capture_output=True, text=True, timeout=900)
+        novos = dict(imagens(chk))
+        mudou = 0
+        for idn, f in achadas:
+            if idn in novos:
+                a = open(os.path.join(exp, f), "rb").read()
+                b = open(os.path.join(chk, novos[idn]), "rb").read()
+                if a != b:
+                    mudou += 1
+        relatorio.append(f"{nome} ({base}): {len(achadas)} imagens, {mudou} trocadas ({n_cor} recoloridas, {n_pers} suas) | {os.path.getsize(dest)} -> {os.path.getsize(saida)} bytes")
+        feitos += 1
+    shutil.rmtree(tmp, ignore_errors=True)
+    txt = ["RESULTADO predios:"] + relatorio + ["", "Copie os .swf de mods/ para Android/data/<pacote>/files/mods/ , apague o cache do jogo e reinicie o app (launcher v2.7 ou mais novo)."]
+    with open(os.path.join(SAIDA, "predios_resultado.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(txt))
+    print("\n".join(txt))
+    if feitos == 0:
+        sys.exit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("comando", choices=["preparar", "analisar", "baixar", "catalogo", "gerar", "verificar", "juntar", "fatiar", "trocar", "swf", "castelo"])
+    ap.add_argument("comando", choices=["preparar", "analisar", "baixar", "catalogo", "gerar", "verificar", "juntar", "fatiar", "trocar", "swf", "castelo", "predios"])
     ap.add_argument("extra", nargs="*", help="juntar PASTA | fatiar PASTA IMAGEM | trocar NOME IMAGEM")
     ap.add_argument("--lista", default="_pedidos.txt")
     ap.add_argument("--faltando", default="_faltando.txt")
@@ -781,6 +922,7 @@ def main():
     ap.add_argument("--grade", default=os.environ.get("GRADE", ""), help="ex.: 30x20  ou  10000=30x20,10010=18x12")
     ap.add_argument("--tam", default="", help="tamanho do tile, ex.: 256x256 (se não houver original)")
     ap.add_argument("--swf", default=os.environ.get("SWF_URLS", ""), help="links de .swf separados por espaco (padrao: os do castelo)")
+    ap.add_argument("--tema", default=os.environ.get("TEMA", "fogo"), choices=["fogo", "nenhum"], help="predios: fogo = recolore; nenhum = so troca as imagens que voce colocou")
     ap.add_argument("--ajuste", default="esticar", choices=["esticar", "cobrir", "conter"])
     a = ap.parse_args()
     c = a.comando
@@ -806,6 +948,8 @@ def main():
         cmd_swf(a)
     elif c == "castelo":
         cmd_castelo(a)
+    elif c == "predios":
+        cmd_predios(a)
     elif c == "juntar":
         cmd_juntar(a, a.extra[0])
     elif c == "fatiar":
