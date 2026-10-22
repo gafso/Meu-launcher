@@ -42,7 +42,7 @@ jobs:
 
       - name: Instalar
         run: |
-          pip install pillow
+          pip install pillow numpy
           mkdir -p ferramentas
           unzip -q -o launcher.zip -d _proj || true
           cp -rn _proj/launcher/ferramentas/. ferramentas/ || true
