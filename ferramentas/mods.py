@@ -981,7 +981,8 @@ def cmd_scripts(args):
         nome = url.split("?")[0].split("/")[-1]
         base = os.path.splitext(nome)[0]
         try:
-            dest = os.path.join(ORIG, "swf", nome)
+            # o jogo guarda o codigo como ".png", mas e um swf: salvar com extensao .swf evita a checagem de imagem
+            dest = os.path.join(ORIG, "swf", base + "_codigo.swf")
             ok = baixar_url(url, dest)
             if not ok or not os.path.exists(dest):
                 diag.append(f"{nome}: NAO BAIXOU ({url})")
