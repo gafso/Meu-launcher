@@ -915,8 +915,8 @@ CODIGO_PADRAO = [
     "https://res1011oas.creaction-network.com/2_995229b1.png",
     "https://res1011oas.creaction-network.com/3_a3b798c7.png",
 ]
-NOME_RE = r"plane|crisis|grid|layer|explor|fog|mist|dark|mine|diamond|transfer|teleport|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
-CONTEUDO_RE = r"plane|explor|fog|mist|diamond|teleport|transfer|treasure"
+NOME_RE = os.environ.get("NOME_RE") or r"plane|crisis|grid|layer|transmit|transfer|teleport|portal|bag|resource|explor|fog|mist|dark|mine|diamond|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
+CONTEUDO_RE = os.environ.get("CONTEUDO_RE") or r"plane|explor|fog|mist|diamond|teleport|transfer|treasure"
 
 
 def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 1024 * 1024):
@@ -949,45 +949,58 @@ def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 
     return sorted(todos), escolhidos
 
 
+def _zlib_tolerante(dados):
+    """Descompacta em pedacos: aceita lixo no final (unused_data) e devolve o que deu antes de um erro/corte.
+    Devolve (corpo, completo): completo = o fluxo zlib terminou direito."""
+    import zlib
+    d = zlib.decompressobj()
+    out = bytearray()
+    try:
+        for p in range(0, len(dados), 4096):
+            out += d.decompress(dados[p:p + 4096])
+            if d.eof:
+                break
+    except Exception:
+        return bytes(out), False
+    return bytes(out), bool(d.eof)
+
+
 def decodifica_core(raw):
     """O jogo guarda o codigo (2.png etc.) embaralhado. ModuleLoader.decry (visto no Loading.swf):
-    resultado = 'CWS' + ultimos 121 bytes + bytes[21 : fim-121]. Pode haver um cabecalho de 37 bytes (md5) antes.
-    Versao tolerante: aceita dados sobrando/faltando no fim e, se nada bater exato, devolve o melhor candidato
-    parcial (marcado como PARCIAL) para o FFDec tentar abrir mesmo assim.
-    Devolve (bytes_cws, descricao) ou (None, motivo)."""
-    import zlib
-    tentativas = []
-    for skip in (0, 37, 4, 8, 16, 32, 36, 38):
-        B = raw[skip:]
-        if len(B) < 300:
-            continue
-        if B[:3] in (b"CWS", b"FWS"):
-            tentativas.append((f"ja {B[:3].decode()} (cab {skip})", B))
-        tentativas.append((f"decry (cab {skip})", b"CWS" + B[len(B) - 121:] + B[21:len(B) - 121]))
-        tentativas.append((f"decry sem cauda (cab {skip})", b"CWS" + B[21:]))
-    melhor, achados = None, []
-    for desc, cand in tentativas:
-        if cand[:3] == b"FWS":
-            if len(cand) == int.from_bytes(cand[4:8], "little"):
-                return cand, desc
-            continue
-        try:
-            total = int.from_bytes(cand[4:8], "little")
-            d = zlib.decompressobj()
-            corpo = d.decompress(cand[8:])             # tolera lixo no fim e fluxo cortado
-        except Exception as e:
-            achados.append(f"{desc}: erro {e}")
-            continue
-        if len(corpo) + 8 == total:                    # bateu exato com o tamanho gravado no cabecalho do swf
-            return cand, desc
-        if len(corpo) > 1000:
-            achados.append(f"{desc}: {len(corpo)+8} de {total}")
-            if melhor is None or len(corpo) > melhor[0]:
-                melhor = (len(corpo), desc, cand, total)
-    if melhor is not None:
-        n, desc, cand, total = melhor
-        return cand, f"PARCIAL {desc}: {n+8} de {total} bytes esperados"
-    return None, "nenhuma variante descompactou: " + " | ".join(achados[:8])
+    resultado = 'CWS' + ultimos 121 bytes + bytes[21 : fim-121]. Pode haver um cabecalho (ex.: 37 bytes de md5)
+    antes e bytes extras depois. Testa varias combinacoes; se nenhuma bater o tamanho exato gravado no swf,
+    aceita a melhor que descompactou (dados extras no final, tamanho divergente) e remonta um swf sem compressao
+    para o FFDec abrir. Devolve (bytes_swf, descricao) ou (None, motivo)."""
+    heads = (0, 37, 32, 16, 40, 8, 4)
+    tails = tuple(range(0, 65))                 # bytes extras no final (0 a 64)
+    melhor = None          # (completo, tamanho_corpo, versao, desc, corpo)
+    tentadas = 0
+    for skip in heads:
+        for tail in tails:
+            B = raw[skip:len(raw) - tail] if tail else raw[skip:]
+            if len(B) < 300:
+                continue
+            cands = []
+            if B[:3] == b"CWS":
+                cands.append((f"ja CWS (cab {skip}, fim -{tail})", B))
+            cands.append((f"decry (cab {skip}, fim -{tail})", b"CWS" + B[len(B) - 121:] + B[21:len(B) - 121]))
+            for desc, cand in cands:
+                tentadas += 1
+                total = int.from_bytes(cand[4:8], "little")
+                corpo, completo = _zlib_tolerante(cand[8:])
+                if len(corpo) < 1000:
+                    continue
+                if completo and len(corpo) + 8 == total:        # perfeito: bate com o tamanho gravado no swf
+                    return cand, desc
+                chave = (completo, len(corpo))
+                if melhor is None or chave > (melhor[0], melhor[1]):
+                    melhor = (completo, len(corpo), cand[3:4], desc, corpo, total)
+    if melhor is None:
+        return None, f"nenhuma das {tentadas} variantes descompactou (cabecalhos {heads}, finais extras 0 a 64 bytes)"
+    completo, n, ver, desc, corpo, total = melhor
+    swf = b"FWS" + ver + (len(corpo) + 8).to_bytes(4, "little") + corpo
+    return swf, (f"{desc} [tamanho nao bate: gravado {total}, obtido {len(corpo) + 8}; fluxo zlib "
+                 f"{'completo' if completo else 'INCOMPLETO'}; aceito e remontado como FWS]")
 
 
 def cmd_scripts(args):
