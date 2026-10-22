@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       acao:
-        description: "analisar = relatorio | baixar = originais + mapa inteiro | gerar = aplica personalizados/ | swf = identifica castelo (imagens dos .swf) | castelo = troca os fundos do castelo | predios = recolore/troca os 8 predios do castelo"
+        description: "analisar = relatorio | baixar = originais + mapa inteiro | gerar = aplica personalizados/ | swf = identifica castelo (imagens dos .swf) | castelo = troca os fundos do castelo | predios = recolore/troca os 8 predios do castelo | scripts = exporta o codigo do jogo (para automacao)"
         type: choice
-        options: [analisar, baixar, gerar, swf, castelo, predios]
+        options: [analisar, baixar, gerar, swf, castelo, predios, scripts]
         default: analisar
       grade:
         description: "Grade do mapa (opcional). Ex.: 30x20  ou  10000=30x20"
