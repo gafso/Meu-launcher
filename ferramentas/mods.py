@@ -912,9 +912,87 @@ def cmd_predios(args):
         sys.exit(1)
 
 
+CODIGO_PADRAO = [
+    "https://res1011oas.creaction-network.com/2_995229b1.png",
+    "https://res1011oas.creaction-network.com/3_a3b798c7.png",
+]
+NOME_RE = r"explor|fog|mist|dark|mine|diamond|transfer|teleport|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
+CONTEUDO_RE = r"explor|fog|mist|diamond|teleport|transfer|treasure"
+
+
+def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 1024 * 1024):
+    """Devolve (todos, escolhidos): caminhos relativos de .as; escolhidos = nome ou conteudo casam, ate 'limite' bytes."""
+    todos, nomes, conts = [], [], []
+    rn, rc = re.compile(nome_re, re.I), re.compile(conteudo_re, re.I)
+    for d, _, fs in os.walk(raiz):
+        for f in fs:
+            if not f.lower().endswith(".as"):
+                continue
+            full = os.path.join(d, f)
+            rel = os.path.relpath(full, raiz)
+            todos.append(rel)
+            if rn.search(rel):
+                nomes.append(rel)
+            else:
+                try:
+                    with open(full, "r", encoding="utf-8", errors="ignore") as fh:
+                        if rc.search(fh.read(300000)):
+                            conts.append(rel)
+                except Exception:
+                    pass
+    escolhidos, total = [], 0
+    for rel in sorted(nomes) + sorted(conts):
+        sz = os.path.getsize(os.path.join(raiz, rel))
+        if total + sz > limite:
+            continue
+        escolhidos.append(rel)
+        total += sz
+    return sorted(todos), escolhidos
+
+
+def cmd_scripts(args):
+    """Baixa o codigo do jogo (os .png que na verdade sao swfs), exporta os scripts AS3 com o FFDec e
+    separa os que tratam de exploracao/mapa/teletransporte. Saida: saida_mods/scripts_filtrados.zip + lista_classes.txt"""
+    import subprocess, zipfile
+    jar = garantir_ffdec()
+    urls = args.swf.split() if getattr(args, "swf", "") else CODIGO_PADRAO
+    saida = os.path.join(SAIDA, "scripts")
+    shutil.rmtree(saida, ignore_errors=True)
+    os.makedirs(saida, exist_ok=True)
+    java = ["java", "-Xmx4g", "-Djava.awt.headless=true", "-jar", jar]
+    todos_geral, rel_geral = [], []
+    for url in urls:
+        nome = url.split("?")[0].split("/")[-1]
+        base = os.path.splitext(nome)[0]
+        dest = os.path.join(ORIG, "swf", nome)
+        if not baixar_url(url, dest):
+            rel_geral.append(f"{nome}: nao baixou")
+            continue
+        exp = os.path.join(saida, base)
+        os.makedirs(exp, exist_ok=True)
+        r = subprocess.run(java + ["-export", "script", exp, dest], capture_output=True, text=True, timeout=3000)
+        print((r.stdout or "")[-400:], (r.stderr or "")[-400:])
+        todos, esc = filtrar_scripts(exp)
+        rel_geral.append(f"{nome}: {len(todos)} scripts, {len(esc)} separados")
+        todos_geral += [f"{base}/{t}" for t in todos]
+        zpath = os.path.join(SAIDA, f"scripts_filtrados_{base}.zip")
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+            for rel in esc:
+                z.write(os.path.join(exp, rel), rel)
+        print(f"{nome}: zip {os.path.getsize(zpath)} bytes")
+    with open(os.path.join(SAIDA, "lista_classes.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(todos_geral))
+    with open(os.path.join(SAIDA, "scripts_resultado.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(rel_geral))
+    shutil.rmtree(saida, ignore_errors=True)
+    print("\n".join(rel_geral))
+    if not todos_geral:
+        sys.exit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("comando", choices=["preparar", "analisar", "baixar", "catalogo", "gerar", "verificar", "juntar", "fatiar", "trocar", "swf", "castelo", "predios"])
+    ap.add_argument("comando", choices=["preparar", "analisar", "baixar", "catalogo", "gerar", "verificar", "juntar", "fatiar", "trocar", "swf", "castelo", "predios", "scripts"])
     ap.add_argument("extra", nargs="*", help="juntar PASTA | fatiar PASTA IMAGEM | trocar NOME IMAGEM")
     ap.add_argument("--lista", default="_pedidos.txt")
     ap.add_argument("--faltando", default="_faltando.txt")
@@ -950,6 +1028,8 @@ def main():
         cmd_castelo(a)
     elif c == "predios":
         cmd_predios(a)
+    elif c == "scripts":
+        cmd_scripts(a)
     elif c == "juntar":
         cmd_juntar(a, a.extra[0])
     elif c == "fatiar":
