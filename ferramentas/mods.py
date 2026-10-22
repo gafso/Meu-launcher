@@ -949,6 +949,30 @@ def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 
     return sorted(todos), escolhidos
 
 
+def decodifica_core(raw):
+    """O jogo guarda o codigo (2.png etc.) embaralhado. ModuleLoader.decry (visto no Loading.swf):
+    resultado = 'CWS' + ultimos 121 bytes + bytes[21 : fim-121]. Pode haver um cabecalho de 37 bytes (md5) antes.
+    Devolve (bytes_cws, descricao) ou (None, motivo)."""
+    import zlib
+    tentativas = []
+    for skip in (0, 37):
+        B = raw[skip:]
+        if len(B) < 300:
+            continue
+        if B[:3] == b"CWS":
+            tentativas.append((f"ja CWS (cab {skip})", B))
+        tentativas.append((f"decry (cab {skip})", b"CWS" + B[len(B) - 121:] + B[21:len(B) - 121]))
+    for desc, cand in tentativas:
+        try:
+            total = int.from_bytes(cand[4:8], "little")
+            corpo = zlib.decompress(cand[8:])          # precisa descompactar inteiro, sem erro
+        except Exception:
+            continue
+        if len(corpo) + 8 == total:                    # e bater com o tamanho gravado no cabecalho do swf
+            return cand, desc
+    return None, "nenhuma variante descompactou e bateu o tamanho (cab 0/37)"
+
+
 def cmd_scripts(args):
     """Baixa o codigo do jogo (os .png que na verdade sao swfs), exporta os scripts AS3 com o FFDec e
     separa os que tratam de exploracao/mapa/teletransporte. Saida em saida_mods/:
@@ -989,8 +1013,18 @@ def cmd_scripts(args):
                 grava_diag()
                 continue
             with open(dest, "rb") as fh:
-                cab = fh.read(8)
-            diag.append(f"{nome}: baixou {os.path.getsize(dest)} bytes, cabecalho={cab[:3]!r} (FWS/CWS/ZWS = swf valido)")
+                raw = fh.read()
+            diag.append(f"{nome}: baixou {len(raw)} bytes, cabecalho={raw[:8].hex()} final={raw[-8:].hex()}")
+            if raw[:3] not in (b"FWS", b"CWS", b"ZWS"):
+                dec, desc = decodifica_core(raw)
+                if dec is None:
+                    diag.append(f"{nome}: NAO consegui desembaralhar: {desc}")
+                    grava_diag()
+                    continue
+                dest = os.path.join(ORIG, "swf", base + "_dec.swf")
+                with open(dest, "wb") as fo:
+                    fo.write(dec)
+                diag.append(f"{nome}: desembaralhado por {desc} -> {len(dec)} bytes (CWS)")
             exp = os.path.join(saida, base)
             os.makedirs(exp, exist_ok=True)
             r = subprocess.run(java + ["-export", "script", exp, dest], capture_output=True, text=True, timeout=3000)
