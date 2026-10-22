@@ -915,8 +915,8 @@ CODIGO_PADRAO = [
     "https://res1011oas.creaction-network.com/2_995229b1.png",
     "https://res1011oas.creaction-network.com/3_a3b798c7.png",
 ]
-NOME_RE = r"explor|fog|mist|dark|mine|diamond|transfer|teleport|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
-CONTEUDO_RE = r"explor|fog|mist|diamond|teleport|transfer|treasure"
+NOME_RE = r"plane|crisis|grid|layer|explor|fog|mist|dark|mine|diamond|transfer|teleport|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
+CONTEUDO_RE = r"plane|explor|fog|mist|diamond|teleport|transfer|treasure"
 
 
 def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 1024 * 1024):
@@ -952,25 +952,42 @@ def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 
 def decodifica_core(raw):
     """O jogo guarda o codigo (2.png etc.) embaralhado. ModuleLoader.decry (visto no Loading.swf):
     resultado = 'CWS' + ultimos 121 bytes + bytes[21 : fim-121]. Pode haver um cabecalho de 37 bytes (md5) antes.
+    Versao tolerante: aceita dados sobrando/faltando no fim e, se nada bater exato, devolve o melhor candidato
+    parcial (marcado como PARCIAL) para o FFDec tentar abrir mesmo assim.
     Devolve (bytes_cws, descricao) ou (None, motivo)."""
     import zlib
     tentativas = []
-    for skip in (0, 37):
+    for skip in (0, 37, 4, 8, 16, 32, 36, 38):
         B = raw[skip:]
         if len(B) < 300:
             continue
-        if B[:3] == b"CWS":
-            tentativas.append((f"ja CWS (cab {skip})", B))
+        if B[:3] in (b"CWS", b"FWS"):
+            tentativas.append((f"ja {B[:3].decode()} (cab {skip})", B))
         tentativas.append((f"decry (cab {skip})", b"CWS" + B[len(B) - 121:] + B[21:len(B) - 121]))
+        tentativas.append((f"decry sem cauda (cab {skip})", b"CWS" + B[21:]))
+    melhor, achados = None, []
     for desc, cand in tentativas:
+        if cand[:3] == b"FWS":
+            if len(cand) == int.from_bytes(cand[4:8], "little"):
+                return cand, desc
+            continue
         try:
             total = int.from_bytes(cand[4:8], "little")
-            corpo = zlib.decompress(cand[8:])          # precisa descompactar inteiro, sem erro
-        except Exception:
+            d = zlib.decompressobj()
+            corpo = d.decompress(cand[8:])             # tolera lixo no fim e fluxo cortado
+        except Exception as e:
+            achados.append(f"{desc}: erro {e}")
             continue
-        if len(corpo) + 8 == total:                    # e bater com o tamanho gravado no cabecalho do swf
+        if len(corpo) + 8 == total:                    # bateu exato com o tamanho gravado no cabecalho do swf
             return cand, desc
-    return None, "nenhuma variante descompactou e bateu o tamanho (cab 0/37)"
+        if len(corpo) > 1000:
+            achados.append(f"{desc}: {len(corpo)+8} de {total}")
+            if melhor is None or len(corpo) > melhor[0]:
+                melhor = (len(corpo), desc, cand, total)
+    if melhor is not None:
+        n, desc, cand, total = melhor
+        return cand, f"PARCIAL {desc}: {n+8} de {total} bytes esperados"
+    return None, "nenhuma variante descompactou: " + " | ".join(achados[:8])
 
 
 def cmd_scripts(args):
