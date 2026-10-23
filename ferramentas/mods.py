@@ -1060,6 +1060,15 @@ def cmd_scripts(args):
             r = subprocess.run(java + ["-export", "script", exp, dest], capture_output=True, text=True, timeout=3000)
             diag.append(f"{nome}: ffdec codigo={r.returncode} stdout={(r.stdout or '')[-300:]!r} stderr={(r.stderr or '')[-500:]!r}")
             todos, esc = filtrar_scripts(exp)
+            if getattr(args, "swf", ""):
+                # URLs informadas a mao: leva TODOS os .as (ate 18 MB), nao so os filtrados
+                esc, tot = [], 0
+                for rel in sorted(todos):
+                    sz = os.path.getsize(os.path.join(exp, rel))
+                    if tot + sz > 18 * 1024 * 1024:
+                        continue
+                    esc.append(rel)
+                    tot += sz
             diag.append(f"{nome}: {len(todos)} scripts, {len(esc)} separados")
             todos_geral += [f"{base}/{t}" for t in todos]
             zpath = os.path.join(SAIDA, f"scripts_filtrados_{base}.zip")
