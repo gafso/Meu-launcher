@@ -1090,33 +1090,41 @@ RES_BASE = "https://res1011oas.creaction-network.com/"
 
 
 def _textos_do_md5(raw):
-    """Devolve versoes legiveis do res_md5.dat: bruto, zlib (inteiro ou com cabecalho pulado)."""
+    """Versoes legiveis do *_md5.dat: o arquivo e um zlib dentro de outro zlib (ate 3 camadas) que termina em XML."""
     import zlib
     outs = [("bruto", raw)]
-    for skip in (0, 1, 2, 4, 8, 16, 32, 37):
+    atual = raw
+    for n in range(1, 4):
         try:
-            outs.append((f"zlib+{skip}", zlib.decompress(raw[skip:])))
-            break
+            atual = zlib.decompress(atual)
         except Exception:
-            pass
-        try:
-            outs.append((f"zlib-raw+{skip}", zlib.decompress(raw[skip:], -15)))
             break
-        except Exception:
-            pass
+        outs.append((f"zlib x{n}", atual))
     return outs
 
 
 def achar_codigos(textos, numeros=range(2, 20)):
-    """Procura 'N.png' + hash (8 hex colado como N_hash.png, ou md5 de 32 hex perto de 'N.png'). {n: nome_arquivo}"""
+    """Acha os arquivos de codigo N.png com hash. Formatos: XML <Item name="4.png" md5="6b7131dc" .../> ou N_hash.png."""
     achados = {}
     for _, dados in textos:
-        t = dados.decode("latin-1", errors="ignore")
+        t = dados.decode("utf-8-sig", errors="ignore") if isinstance(dados, bytes) else dados
+        for m in re.finditer(r'name="(\d{1,2})\.png"\s+md5="([0-9a-fA-F]{8})', t):
+            achados.setdefault(int(m.group(1)), f"{m.group(1)}_{m.group(2).lower()}.png")
         for m in re.finditer(r"(?<![0-9A-Za-z])(\d{1,2})_([0-9a-fA-F]{8})\.png", t):
             achados.setdefault(int(m.group(1)), f"{m.group(1)}_{m.group(2).lower()}.png")
-        for m in re.finditer(r"(?<![0-9A-Za-z_])(\d{1,2})\.png[^0-9A-Za-z]{0,12}([0-9a-fA-F]{32})", t):
-            achados.setdefault(int(m.group(1)), f"{m.group(1)}_{m.group(2)[:8].lower()}.png")
     return {n: v for n, v in achados.items() if n in numeros}
+
+
+def achar_swf_ui(textos, nomes):
+    """Acha ui/zh_cn/swf/<nome>.swf no XML e devolve {nome: 'ui/zh_cn/swf/nome_hash.swf'}."""
+    out = {}
+    for _, dados in textos:
+        t = dados.decode("utf-8-sig", errors="ignore") if isinstance(dados, bytes) else dados
+        for nome in nomes:
+            m = re.search(r'name="ui\\zh_cn\\swf\\' + re.escape(nome) + r'\.swf"\s+md5="([0-9a-fA-F]{8})', t)
+            if m:
+                out[nome] = f"ui/zh_cn/swf/{nome}_{m.group(1).lower()}.swf"
+    return out
 
 
 def _tenta(url):
@@ -1174,7 +1182,8 @@ def cmd_modulos(args):
                 diag.append(f"[{nome}] ...{t[max(0, k - 40):k + 50]!r}")
     open(os.path.join(SAIDA, "modulos_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag))
     print("\n".join(diag))
-    urls = [RES_BASE + achados[n] for n in sorted(achados)]
+    urls = [RES_BASE + achados[n] for n in sorted(achados) if n not in (2, 3)]   # 2 e 3 ja foram exportados
+    urls += [RES_BASE + v for v in achar_swf_ui(textos, ["transferbuilding", "queuebar", "planecrisis"]).values()]
     if not urls:
         return
     args.swf = " ".join(urls)
