@@ -1060,7 +1060,7 @@ def cmd_scripts(args):
             r = subprocess.run(java + ["-export", "script", exp, dest], capture_output=True, text=True, timeout=3000)
             diag.append(f"{nome}: ffdec codigo={r.returncode} stdout={(r.stdout or '')[-300:]!r} stderr={(r.stderr or '')[-500:]!r}")
             todos, esc = filtrar_scripts(exp)
-            if getattr(args, "swf", ""):
+            if getattr(args, "swf", "") and not getattr(args, "filtrar", False):
                 # URLs informadas a mao: leva TODOS os .as (ate 18 MB), nao so os filtrados
                 esc, tot = [], 0
                 for rel in sorted(todos):
@@ -1086,9 +1086,89 @@ def cmd_scripts(args):
     print("\n".join(diag))
 
 
+RES_BASE = "https://res1011oas.creaction-network.com/"
+
+
+def _textos_do_md5(raw):
+    """Devolve versoes legiveis do res_md5.dat: bruto, zlib (inteiro ou com cabecalho pulado)."""
+    import zlib
+    outs = [("bruto", raw)]
+    for skip in (0, 1, 2, 4, 8, 16, 32, 37):
+        try:
+            outs.append((f"zlib+{skip}", zlib.decompress(raw[skip:])))
+            break
+        except Exception:
+            pass
+        try:
+            outs.append((f"zlib-raw+{skip}", zlib.decompress(raw[skip:], -15)))
+            break
+        except Exception:
+            pass
+    return outs
+
+
+def achar_codigos(textos, numeros=range(2, 20)):
+    """Procura 'N.png' + hash (8 hex colado como N_hash.png, ou md5 de 32 hex perto de 'N.png'). {n: nome_arquivo}"""
+    achados = {}
+    for _, dados in textos:
+        t = dados.decode("latin-1", errors="ignore")
+        for m in re.finditer(r"(?<![0-9A-Za-z])(\d{1,2})_([0-9a-fA-F]{8})\.png", t):
+            achados.setdefault(int(m.group(1)), f"{m.group(1)}_{m.group(2).lower()}.png")
+        for m in re.finditer(r"(?<![0-9A-Za-z_])(\d{1,2})\.png[^0-9A-Za-z]{0,12}([0-9a-fA-F]{32})", t):
+            achados.setdefault(int(m.group(1)), f"{m.group(1)}_{m.group(2)[:8].lower()}.png")
+    return {n: v for n, v in achados.items() if n in numeros}
+
+
+def cmd_modulos(args):
+    """Descobre sozinho os arquivos de codigo N.png do jogo (2.png, 3.png, 4.png...) lendo o res_md5.dat,
+    guarda o res_md5.dat bruto em saida_mods/ para conferencia e exporta os scripts (filtrados) dos que faltam."""
+    os.makedirs(SAIDA, exist_ok=True)
+    diag = ["acao modulos iniciada"]
+    dest = os.path.join(ORIG, "res_md5.dat")
+    ok = False
+    for u in (RES_BASE + "res_md5.dat", RES_BASE + "res_md5.dat?rnd=1"):
+        if baixar_url(u, dest, quieto=True):
+            diag.append("res_md5.dat baixado de " + u)
+            ok = True
+            break
+    if not ok:
+        diag.append("NAO consegui baixar o res_md5.dat (tentei " + RES_BASE + "res_md5.dat). Me diga a URL exata que o launcher usa.")
+        open(os.path.join(SAIDA, "modulos_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag))
+        print("\n".join(diag))
+        return
+    raw = open(dest, "rb").read()
+    shutil.copy(dest, os.path.join(SAIDA, "res_md5.dat"))
+    diag.append(f"res_md5.dat: {len(raw)} bytes, inicio={raw[:24].hex()} texto={raw[:60]!r}")
+    textos = _textos_do_md5(raw)
+    diag.append("leituras tentadas: " + ", ".join(f"{n}({len(d)}B)" for n, d in textos))
+    achados = achar_codigos(textos)
+    diag.append("arquivos de codigo achados: " + (", ".join(achados[n] for n in sorted(achados)) or "NENHUM"))
+    if not achados:
+        # ajuda a ver o formato: mostra trechos ao redor de ".png" e "4."
+        for nome, dados in textos[:3]:
+            t = dados.decode("latin-1", errors="ignore")
+            ix = [m.start() for m in re.finditer(r"\.png", t)][:5]
+            for i in ix:
+                diag.append(f"[{nome}] ...{t[max(0, i - 40):i + 50]!r}")
+    open(os.path.join(SAIDA, "modulos_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag))
+    print("\n".join(diag))
+    urls = [RES_BASE + achados[n] for n in sorted(achados)]
+    if not urls:
+        return
+    args.swf = " ".join(urls)
+    args.filtrar = True
+    cmd_scripts(args)
+    # junta o diagnostico do modulos com o do scripts
+    try:
+        extra = open(os.path.join(SAIDA, "scripts_diagnostico.txt"), encoding="utf-8").read()
+        open(os.path.join(SAIDA, "scripts_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag) + "\n\n" + extra)
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("comando", choices=["preparar", "analisar", "baixar", "catalogo", "gerar", "verificar", "juntar", "fatiar", "trocar", "swf", "castelo", "predios", "scripts"])
+    ap.add_argument("comando", choices=["preparar", "analisar", "baixar", "catalogo", "gerar", "verificar", "juntar", "fatiar", "trocar", "swf", "castelo", "predios", "scripts", "modulos"])
     ap.add_argument("extra", nargs="*", help="juntar PASTA | fatiar PASTA IMAGEM | trocar NOME IMAGEM")
     ap.add_argument("--lista", default="_pedidos.txt")
     ap.add_argument("--faltando", default="_faltando.txt")
@@ -1126,6 +1206,8 @@ def main():
         cmd_predios(a)
     elif c == "scripts":
         cmd_scripts(a)
+    elif c == "modulos":
+        cmd_modulos(a)
     elif c == "juntar":
         cmd_juntar(a, a.extra[0])
     elif c == "fatiar":
