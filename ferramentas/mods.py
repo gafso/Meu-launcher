@@ -1119,37 +1119,59 @@ def achar_codigos(textos, numeros=range(2, 20)):
     return {n: v for n, v in achados.items() if n in numeros}
 
 
+def _tenta(url):
+    """Baixa url na memoria. Devolve (bytes|None, descricao)."""
+    import urllib.error
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": "https://s1011oas.creaction-network.com/client/Loading.swf", "Accept": "*/*"})
+        with urllib.request.urlopen(req, timeout=40) as r:
+            return r.read(), f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        return None, f"HTTP {e.code}"
+    except Exception as e:                           # noqa: BLE001
+        return None, f"erro {type(e).__name__}: {e}"
+
+
 def cmd_modulos(args):
-    """Descobre sozinho os arquivos de codigo N.png do jogo (2.png, 3.png, 4.png...) lendo o res_md5.dat,
-    guarda o res_md5.dat bruto em saida_mods/ para conferencia e exporta os scripts (filtrados) dos que faltam."""
+    """Descobre sozinho os arquivos de codigo N.png do jogo (2.png, 3.png, 4.png...). O Loading.swf usa tres
+    arquivos de versao: code_md5.dat (codigo), res_md5.dat (recursos) e md5.zip. Tenta varios enderecos, registra
+    o resultado de cada um, guarda o que baixar em saida_mods/ e exporta os scripts (filtrados) dos codigos achados."""
+    import zipfile, io
     os.makedirs(SAIDA, exist_ok=True)
     diag = ["acao modulos iniciada"]
-    dest = os.path.join(ORIG, "res_md5.dat")
-    ok = False
-    for u in (RES_BASE + "res_md5.dat", RES_BASE + "res_md5.dat?rnd=1"):
-        if baixar_url(u, dest, quieto=True):
-            diag.append("res_md5.dat baixado de " + u)
-            ok = True
-            break
-    if not ok:
-        diag.append("NAO consegui baixar o res_md5.dat (tentei " + RES_BASE + "res_md5.dat). Me diga a URL exata que o launcher usa.")
-        open(os.path.join(SAIDA, "modulos_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag))
-        print("\n".join(diag))
-        return
-    raw = open(dest, "rb").read()
-    shutil.copy(dest, os.path.join(SAIDA, "res_md5.dat"))
-    diag.append(f"res_md5.dat: {len(raw)} bytes, inicio={raw[:24].hex()} texto={raw[:60]!r}")
-    textos = _textos_do_md5(raw)
-    diag.append("leituras tentadas: " + ", ".join(f"{n}({len(d)}B)" for n, d in textos))
+    bases = [RES_BASE, "https://s1011oas.creaction-network.com/", "https://s1011oas.creaction-network.com/client/",
+             "https://s1011oas.creaction-network.com/xml/", RES_BASE + "xml/", RES_BASE + "client/"]
+    nomes = ["code_md5.dat", "res_md5.dat", "md5.zip"]
+    textos = []
+    for nome in nomes:
+        for b in bases:
+            for sufixo in ("", "?rnd=1"):
+                u = b + nome + sufixo
+                dados, desc = _tenta(u)
+                diag.append(f"{desc}  {u}" + (f"  ({len(dados)} bytes)" if dados else ""))
+                if dados:
+                    arq = nome.replace(".", "_") + "_" + re.sub(r"[^A-Za-z0-9]", "", b.split("//")[1])[:25] + ".bin"
+                    open(os.path.join(SAIDA, arq), "wb").write(dados)
+                    diag.append(f"   inicio={dados[:24].hex()} texto={dados[:60]!r}")
+                    textos += [(f"{nome}@{b}/{n}", d) for n, d in _textos_do_md5(dados)]
+                    if dados[:2] == b"PK":
+                        try:
+                            z = zipfile.ZipFile(io.BytesIO(dados))
+                            for zi in z.namelist():
+                                zd = z.read(zi)
+                                diag.append(f"   zip contem {zi} ({len(zd)} bytes)")
+                                textos += [(f"{nome}/{zi}/{n}", d) for n, d in _textos_do_md5(zd)]
+                        except Exception as e:      # noqa: BLE001
+                            diag.append(f"   zip ilegivel: {e}")
+                    break                           # esse nome funcionou nessa base; passa para a proxima base nao e preciso testar o ?rnd
     achados = achar_codigos(textos)
     diag.append("arquivos de codigo achados: " + (", ".join(achados[n] for n in sorted(achados)) or "NENHUM"))
-    if not achados:
-        # ajuda a ver o formato: mostra trechos ao redor de ".png" e "4."
-        for nome, dados in textos[:3]:
+    if textos and not achados:
+        for nome, dados in textos[:4]:
             t = dados.decode("latin-1", errors="ignore")
-            ix = [m.start() for m in re.finditer(r"\.png", t)][:5]
-            for i in ix:
-                diag.append(f"[{nome}] ...{t[max(0, i - 40):i + 50]!r}")
+            ix = [m.start() for m in re.finditer(r"\.png", t)][:4]
+            for k in ix:
+                diag.append(f"[{nome}] ...{t[max(0, k - 40):k + 50]!r}")
     open(os.path.join(SAIDA, "modulos_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag))
     print("\n".join(diag))
     urls = [RES_BASE + achados[n] for n in sorted(achados)]
@@ -1158,7 +1180,6 @@ def cmd_modulos(args):
     args.swf = " ".join(urls)
     args.filtrar = True
     cmd_scripts(args)
-    # junta o diagnostico do modulos com o do scripts
     try:
         extra = open(os.path.join(SAIDA, "scripts_diagnostico.txt"), encoding="utf-8").read()
         open(os.path.join(SAIDA, "scripts_diagnostico.txt"), "w", encoding="utf-8").write("\n".join(diag) + "\n\n" + extra)
