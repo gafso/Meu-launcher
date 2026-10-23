@@ -915,8 +915,8 @@ CODIGO_PADRAO = [
     "https://res1011oas.creaction-network.com/2_995229b1.png",
     "https://res1011oas.creaction-network.com/3_a3b798c7.png",
 ]
-NOME_RE = os.environ.get("NOME_RE") or r"plane|crisis|grid|layer|transmit|transfer|teleport|portal|bag|resource|explor|fog|mist|dark|mine|diamond|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
-CONTEUDO_RE = os.environ.get("CONTEUDO_RE") or r"plane|explor|fog|mist|diamond|teleport|transfer|treasure"
+NOME_RE = os.environ.get("NOME_RE") or r"plane|crisis|grid|layer|transmit|transfer|energy|teleport|portal|bag|resource|explor|fog|mist|dark|mine|diamond|eye|walk|path|astar|treasure|dig|worldmap|mapview|scene"
+CONTEUDO_RE = os.environ.get("CONTEUDO_RE") or r"plane|explor|fog|mist|diamond|teleport|transfer|treasure|ADD_ENERGY|TRANESFER"
 
 
 def filtrar_scripts(raiz, nome_re=NOME_RE, conteudo_re=CONTEUDO_RE, limite=18 * 1024 * 1024):
