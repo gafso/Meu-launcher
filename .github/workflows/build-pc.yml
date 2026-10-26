@@ -6,7 +6,7 @@ on:
       sdk_url:
         description: "AIR SDK 51 para WINDOWS (página da release OU link direto do arquivo)"
         required: true
-        default: "https://github.com/gafso/sdk/releases/tag/Sdk"
+        default: "https://github.com/gafso/sdk/releases/tag/Sdkatt"
 
 jobs:
   build:
