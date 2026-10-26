@@ -49,7 +49,18 @@ jobs:
           $name = ''
           if ($url -match 'github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+)') {
             $api = "https://api.github.com/repos/$($Matches[1])/$($Matches[2])/releases/tags/$($Matches[3])"
-            $rel = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'actions' }
+            $auth = $true
+            try {
+              $rel = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'actions' }
+            } catch {
+              Write-Host "Falhou com o token do Actions ($($_.Exception.Message)). Tentando sem token (repositorio publico)..."
+              $auth = $false
+              try {
+                $rel = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'actions' }
+              } catch {
+                throw "Release nao encontrada em $api. Confira o link (repositorio PUBLICO, release publicada e nao rascunho, tag certa). Alternativa: cole o link DIRETO do arquivo do SDK (clique com o botao direito no arquivo da release > copiar link)."
+              }
+            }
             Write-Host 'Arquivos da release:'
             foreach ($a in $rel.assets) { Write-Host "  $($a.name)  ($($a.size) bytes)" }
             $cands = @($rel.assets | Where-Object { $_.name -match '\.(zip|tar\.gz|tgz|tar\.bz2|tbz2)$' })
@@ -58,7 +69,11 @@ jobs:
             if (-not $pick) { throw 'nenhum .zip/.tar na release' }
             $name = $pick.name
             Write-Host "Baixando: $name"
-            Invoke-WebRequest -Uri $pick.url -OutFile sdk_download -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'User-Agent' = 'actions' }
+            if ($auth) {
+              Invoke-WebRequest -Uri $pick.url -OutFile sdk_download -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'User-Agent' = 'actions' }
+            } else {
+              Invoke-WebRequest -Uri $pick.browser_download_url -OutFile sdk_download -Headers @{ 'User-Agent' = 'actions' }
+            }
           } else {
             $name = Split-Path ($url.Split('?')[0]) -Leaf
             Write-Host "Baixando: $url"
