@@ -112,7 +112,7 @@ jobs:
           Write-Host "AIR SDK $v (namespace $ns)"
           Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force build\app | Out-Null
-          (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM").Replace('<supportedProfiles>desktop</supportedProfiles>', '<supportedProfiles>extendedDesktop</supportedProfiles>') | Set-Content build\app\app.xml -Encoding utf8
+          (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM").Replace('<supportedProfiles>desktop</supportedProfiles>', '<supportedProfiles>desktop extendedDesktop</supportedProfiles>') | Set-Content build\app\app.xml -Encoding utf8
 
           Write-Host '==> 1/3 Compilando o ActionScript'
           & "$sdk\bin\amxmlc.bat" -source-path src -default-size 1352 650 -output build\app\Main.swf src\Main.as
@@ -127,6 +127,28 @@ jobs:
           & "$sdk\bin\adt.bat" -package -storetype pkcs12 -keystore build\cert.p12 -storepass changeit -tsa none -target bundle build\LegendPC build\app\app.xml -C build\app Main.swf -C build\app assets
           if ($LASTEXITCODE -ne 0) { throw 'falha ao empacotar (veja os erros acima)' }
           Get-ChildItem build\LegendPC | ForEach-Object { Write-Host "  $($_.Name)" }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Navegador do login (Chromium atual, via Electron)
+        working-directory: ${{ env.PROJ }}/login-helper
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --no-audit --no-fund --no-save electron@31
+          if ($LASTEXITCODE -ne 0) { throw 'falha ao baixar o Electron (veja os erros acima)' }
+          $dist = Join-Path (Get-Location) 'node_modules\electron\dist'
+          if (-not (Test-Path "$dist\electron.exe")) { throw 'electron.exe nao encontrado em node_modules\electron\dist' }
+          $dest = Join-Path $env:PROJ 'build\LegendPC\login'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item "$dist\*" $dest -Recurse -Force
+          Rename-Item "$dest\electron.exe" 'LegendLogin.exe'
+          Remove-Item "$dest\resources\default_app.asar" -Force -ErrorAction SilentlyContinue
+          $app = Join-Path $dest 'resources\app'
+          New-Item -ItemType Directory -Force $app | Out-Null
+          Copy-Item main.js, package.json $app
+          Get-ChildItem $dest | Select-Object -First 12 | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Instalador alternativo (.air, precisa do Adobe AIR no PC)
         continue-on-error: true
