@@ -112,7 +112,7 @@ jobs:
           Write-Host "AIR SDK $v (namespace $ns)"
           Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force build\app | Out-Null
-          (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM") | Set-Content build\app\app.xml -Encoding utf8
+          (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM").Replace('<supportedProfiles>desktop</supportedProfiles>', '<supportedProfiles>extendedDesktop</supportedProfiles>') | Set-Content build\app\app.xml -Encoding utf8
 
           Write-Host '==> 1/3 Compilando o ActionScript'
           & "$sdk\bin\amxmlc.bat" -source-path src -default-size 1352 650 -output build\app\Main.swf src\Main.as
