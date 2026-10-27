@@ -7,6 +7,10 @@ on:
         description: "AIR SDK 51 para WINDOWS (página da release OU link direto do arquivo)"
         required: true
         default: "https://github.com/gafso/sdk/releases/tag/Sdkatt"
+      instancias:
+        description: "Quantas janelas do jogo o instalador deve ter (Legend PC, Legend PC 2, ...) - de 1 a 6"
+        required: false
+        default: "3"
 
 jobs:
   build:
@@ -102,6 +106,7 @@ jobs:
         working-directory: ${{ env.PROJ }}
         env:
           RUN_NUM: ${{ github.run_number }}
+          INSTANCIAS: ${{ github.event.inputs.instancias }}
         run: |
           $ErrorActionPreference = 'Stop'
           $sdk = $env:AIR_SDK
@@ -110,9 +115,14 @@ jobs:
           $p = $v.Split('.')
           $ns = "$($p[0]).$($p[1])"
           Write-Host "AIR SDK $v (namespace $ns)"
+          $n = 3
+          if ($env:INSTANCIAS -match '^\d+$') { $n = [int]$env:INSTANCIAS }
+          if ($n -lt 1) { $n = 1 }
+          if ($n -gt 6) { $n = 6 }
+          "INSTANCIAS_N=$n" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force build\app | Out-Null
-          (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM").Replace('<supportedProfiles>desktop</supportedProfiles>', '<supportedProfiles>desktop extendedDesktop</supportedProfiles>') | Set-Content build\app\app.xml -Encoding utf8
+          $xml = (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM").Replace('<supportedProfiles>desktop</supportedProfiles>', '<supportedProfiles>desktop extendedDesktop</supportedProfiles>')
 
           Write-Host '==> 1/3 Compilando o ActionScript'
           & "$sdk\bin\amxmlc.bat" -source-path src -default-size 1352 650 -output build\app\Main.swf src\Main.as
@@ -123,9 +133,19 @@ jobs:
           & "$sdk\bin\adt.bat" -certificate -cn LegendPC -validityPeriod 25 2048-RSA build\cert.p12 changeit
           if ($LASTEXITCODE -ne 0) { throw 'falha ao criar o certificado' }
 
-          Write-Host '==> 3/3 Empacotando (pasta com o LegendPC.exe)'
-          & "$sdk\bin\adt.bat" -package -storetype pkcs12 -keystore build\cert.p12 -storepass changeit -tsa none -target bundle build\LegendPC build\app\app.xml -C build\app Main.swf -C build\app assets
-          if ($LASTEXITCODE -ne 0) { throw 'falha ao empacotar (veja os erros acima)' }
+          # O AIR so deixa UMA janela por aplicativo (mesmo id). Para abrir mais de um jogo ao mesmo tempo, cada instancia
+          # e empacotada com id e nome proprios (com.meulauncher.pc, com.meulauncher.pc2, ...): sao apps separados para o Windows.
+          Write-Host "==> 3/3 Empacotando $n instancia(s) (pasta com o LegendPC.exe)"
+          for ($i = 1; $i -le $n; $i++) {
+            $suf = ''
+            $label = 'Legend PC'
+            if ($i -gt 1) { $suf = "$i"; $label = "Legend PC $i" }
+            $x = $xml.Replace('<id>com.meulauncher.pc</id>', "<id>com.meulauncher.pc$suf</id>").Replace('<filename>LegendPC</filename>', "<filename>LegendPC$suf</filename>").Replace('<name>Legend PC</name>', "<name>$label</name>").Replace('<title>Legend PC</title>', "<title>$label</title>")
+            Set-Content "build\app\app$suf.xml" $x -Encoding utf8
+            & "$sdk\bin\adt.bat" -package -storetype pkcs12 -keystore build\cert.p12 -storepass changeit -tsa none -target bundle "build\LegendPC$suf" "build\app\app$suf.xml" -C build\app Main.swf -C build\app assets
+            if ($LASTEXITCODE -ne 0) { throw "falha ao empacotar a instancia $i (veja os erros acima)" }
+            Write-Host "  ok: build\LegendPC$suf"
+          }
 
       - uses: actions/setup-node@v4
         with:
@@ -139,7 +159,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'falha ao baixar o Electron (veja os erros acima)' }
           $dist = Join-Path (Get-Location) 'node_modules\electron\dist'
           if (-not (Test-Path "$dist\electron.exe")) { throw 'electron.exe nao encontrado em node_modules\electron\dist' }
-          $dest = Join-Path $env:PROJ 'build\LegendPC\login'
+          $dest = Join-Path $env:PROJ 'build\login'
           New-Item -ItemType Directory -Force $dest | Out-Null
           Copy-Item "$dist\*" $dest -Recurse -Force
           Rename-Item "$dest\electron.exe" 'LegendLogin.exe'
@@ -148,8 +168,10 @@ jobs:
           New-Item -ItemType Directory -Force $app | Out-Null
           Copy-Item main.js, package.json $app
           Get-ChildItem $dest | Select-Object -First 12 | ForEach-Object { Write-Host "  $($_.Name)" }
+          # a pasta solta (artefato LegendPC-Windows) funciona sem instalar: leva uma copia do login dentro da LegendPC
+          Copy-Item $dest (Join-Path $env:PROJ 'build\LegendPC\login') -Recurse -Force
 
-      - name: Instalador alternativo (.air, precisa do Adobe AIR no PC)
+      - name: Pacote .air alternativo (precisa do Adobe AIR no PC)
         continue-on-error: true
         working-directory: ${{ env.PROJ }}
         run: |
@@ -165,3 +187,47 @@ jobs:
         with:
           name: LegendPC-air-alternativo
           path: ${{ env.PROJ }}/build/LegendPC.air
+
+      - name: Instalador (LegendPC-Setup.exe com todas as instancias)
+        working-directory: ${{ env.PROJ }}
+        env:
+          RUN_NUM: ${{ github.run_number }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $n = [int]$env:INSTANCIAS_N
+          $build = (Resolve-Path build).Path
+          # o navegador do login fica numa pasta so (build\login), compartilhada pelas instancias
+          Remove-Item "$build\LegendPC\login" -Recurse -Force -ErrorAction SilentlyContinue
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            Write-Host 'Instalando o Inno Setup...'
+            choco install innosetup -y --no-progress
+            if (-not (Test-Path $iscc)) { throw 'Inno Setup nao encontrado depois de instalar' }
+          }
+          $files = New-Object System.Collections.Generic.List[string]
+          $icons = New-Object System.Collections.Generic.List[string]
+          $files.Add("Source: `"$build\login\*`"; DestDir: `"{app}\login`"; Flags: recursesubdirs createallsubdirs ignoreversion")
+          for ($i = 1; $i -le $n; $i++) {
+            $suf = ''
+            $label = 'Legend PC'
+            if ($i -gt 1) { $suf = "$i"; $label = "Legend PC $i" }
+            $files.Add("Source: `"$build\LegendPC$suf\*`"; DestDir: `"{app}\LegendPC$suf`"; Flags: recursesubdirs createallsubdirs ignoreversion")
+            $icons.Add("Name: `"{autoprograms}\$label`"; Filename: `"{app}\LegendPC$suf\LegendPC$suf.exe`"; WorkingDir: `"{app}\LegendPC$suf`"")
+            $icons.Add("Name: `"{autodesktop}\$label`"; Filename: `"{app}\LegendPC$suf\LegendPC$suf.exe`"; WorkingDir: `"{app}\LegendPC$suf`"; Tasks: desktopicon")
+          }
+          $lang = ''
+          $pt = Join-Path (Split-Path $iscc) 'Languages\BrazilianPortuguese.isl'
+          if (Test-Path $pt) { $lang = "[Languages]`nName: `"pt`"; MessagesFile: `"$pt`"`n" }
+          $out = Join-Path $build 'Output'
+          $tpl = Get-Content installer\LegendPC.iss.template -Raw
+          $iss = $tpl.Replace('@APPVER@', "1.0.$env:RUN_NUM").Replace('@OUTDIR@', $out).Replace('@LANGUAGES@', $lang).Replace('@FILES@', ($files -join "`n")).Replace('@ICONS@', ($icons -join "`n"))
+          Set-Content "$build\LegendPC.iss" $iss -Encoding utf8BOM
+          & $iscc /Qp "$build\LegendPC.iss"
+          if ($LASTEXITCODE -ne 0) { throw 'falha ao gerar o instalador (veja os erros acima)' }
+          Get-ChildItem $out | ForEach-Object { Write-Host "  $($_.Name)  ($([math]::Round($_.Length / 1MB)) MB)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LegendPC-Instalador
+          path: ${{ env.PROJ }}/build/Output/LegendPC-Setup.exe
+          compression-level: 0
