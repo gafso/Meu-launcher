@@ -1,0 +1,77 @@
+name: Build Flash (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      flash_dll_url:
+        description: "OPCIONAL: link direto de um pepflashplayer64_*.dll seu (senão coloque o dll na pasta flash depois)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Achar o projeto
+        run: |
+          New-Item -ItemType Directory -Force proj | Out-Null
+          if (Test-Path legend-flash.zip) {
+            Expand-Archive -Path legend-flash.zip -DestinationPath proj -Force
+          } else {
+            Get-ChildItem -Force | Where-Object { $_.Name -notin @('proj', '.git') } | Copy-Item -Destination proj -Recurse -Force
+          }
+          $a = Get-ChildItem -Path proj -Recurse -Filter main.js | Where-Object { Test-Path (Join-Path $_.DirectoryName 'index.html') } | Select-Object -First 1
+          if (-not $a) {
+            Write-Host "ERRO: nao achei app\main.js junto de index.html. Arquivos:"
+            Get-ChildItem -Recurse -Depth 3 | Select-Object -First 80 | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+          $root = Split-Path $a.DirectoryName -Parent
+          Write-Host "App em: $($a.DirectoryName)"
+          "APPSRC=$($a.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Montar o Legend Flash (Electron 11 = Chromium 87, ainda aceita Pepper Flash)
+        env:
+          DLL_URL: ${{ github.event.inputs.flash_dll_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tmp = Join-Path $env:RUNNER_TEMP 'el'
+          New-Item -ItemType Directory -Force $tmp | Out-Null
+          Set-Location $tmp
+          npm init -y | Out-Null
+          npm install --no-audit --no-fund electron@11.5.0
+          if ($LASTEXITCODE -ne 0) { throw 'falha ao baixar o Electron 11 (veja os erros acima)' }
+          $dist = Join-Path $tmp 'node_modules\electron\dist'
+          if (-not (Test-Path "$dist\electron.exe")) { throw 'electron.exe nao encontrado' }
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'out\LegendFlash'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item "$dist\*" $dest -Recurse -Force
+          Rename-Item "$dest\electron.exe" 'LegendFlash.exe'
+          Remove-Item "$dest\resources\default_app.asar" -Force -ErrorAction SilentlyContinue
+          $app = Join-Path $dest 'resources\app'
+          New-Item -ItemType Directory -Force $app | Out-Null
+          Copy-Item "$env:APPSRC\*" $app -Recurse -Force
+          $fl = Join-Path $dest 'flash'
+          New-Item -ItemType Directory -Force $fl | Out-Null
+          if (Test-Path "$env:ROOT\flash") { Copy-Item "$env:ROOT\flash\*" $fl -Recurse -Force }
+          if ($env:DLL_URL) {
+            Write-Host "Baixando o dll do Flash do seu link..."
+            Invoke-WebRequest -Uri $env:DLL_URL -OutFile (Join-Path $fl 'pepflashplayer64.dll')
+          }
+          Write-Host "Pasta flash:"
+          Get-ChildItem $fl | ForEach-Object { Write-Host "  $($_.Name)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LegendFlash-Windows
+          path: out/LegendFlash
