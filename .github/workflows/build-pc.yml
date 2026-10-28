@@ -102,11 +102,11 @@ jobs:
           New-Item -ItemType Directory -Force build\app | Out-Null
           $xml = (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM")
           if ($xml -notmatch '<architecture>') {
-            $xml = $xml -replace '(</supportedProfiles>)', "`$1`r`n    <architecture>64</architecture>"
+            $xml = $xml.Replace('</supportedProfiles>', ('</supportedProfiles>' + [char]10 + '    <architecture>64</architecture>'))
           } else {
             $xml = $xml -replace '<architecture>\s*\d+\s*</architecture>', '<architecture>64</architecture>'
           }
-          $xml | Set-Content buildpppp.xml -Encoding utf8
+          $xml | Set-Content 'build/app/app.xml' -Encoding utf8
           Write-Host 'app.xml architecture:'
           Select-String -Path 'build/app/app.xml' -Pattern 'architecture' 
 
