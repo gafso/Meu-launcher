@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       sdk_url:
-        description: "AIR SDK 51 para WINDOWS (página da release OU link direto do arquivo)"
+        description: "Obrigatorio: URL do AIR SDK Windows (.zip) ou pagina/release no GitHub que contenha o zip"
         required: true
-        default: "https://github.com/gafso/sdk/releases/tag/Sdk"
+        default: ""
 
 jobs:
   build:
@@ -45,35 +45,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $url = $env:SDK_URL
+          $url = ($env:SDK_URL).Trim()
+          if (-not $url) { throw 'sdk_url vazio. Informe o link do AIR SDK Windows (.zip) ou da release no GitHub.' }
+          Write-Host "SDK_URL = $url"
           $name = ''
+          $hdr = @{ 'User-Agent' = 'actions' }
+          if ($env:GH_TOKEN) { $hdr['Authorization'] = "Bearer $env:GH_TOKEN" }
+
           if ($url -match 'github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+)') {
-            $api = "https://api.github.com/repos/$($Matches[1])/$($Matches[2])/releases/tags/$($Matches[3])"
-            $rel = Invoke-RestMethod -Uri $api -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'actions' }
-            Write-Host 'Arquivos da release:'
-            foreach ($a in $rel.assets) { Write-Host "  $($a.name)  ($($a.size) bytes)" }
+            $owner = $Matches[1]; $repo = $Matches[2]; $tag = $Matches[3]
+            $api = "https://api.github.com/repos/$owner/$repo/releases/tags/$tag"
+            Write-Host "API release: $api"
+            $rel = $null
+            try { $rel = Invoke-RestMethod -Uri $api -Headers $hdr } catch {
+              Write-Host "Tag nao encontrada. Tentando /releases/latest ..."
+              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/latest" -Headers $hdr } catch {
+                throw "Release do SDK nao encontrada (404). Repo=$owner/$repo tag=$tag. Use um sdk_url valido: pagina da release ou link direto do .zip do AIR SDK Windows."
+              }
+            }
+            Write-Host "Release: $($rel.tag_name)"
+            foreach ($a in $rel.assets) { Write-Host "  asset: $($a.name) ($($a.size) bytes)" }
             $cands = @($rel.assets | Where-Object { $_.name -match '\.(zip|tar\.gz|tgz|tar\.bz2|tbz2)$' })
             $pick = $cands | Where-Object { $_.name -match 'win' } | Sort-Object size -Descending | Select-Object -First 1
             if (-not $pick) { $pick = $cands | Sort-Object size -Descending | Select-Object -First 1 }
-            if (-not $pick) { throw 'nenhum .zip/.tar na release' }
+            if (-not $pick) { throw 'Nenhum .zip/.tar na release. Suba o AIR SDK Windows como asset.' }
             $name = $pick.name
-            Write-Host "Baixando: $name"
-            Invoke-WebRequest -Uri $pick.url -OutFile sdk_download -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'User-Agent' = 'actions' }
+            Write-Host "Baixando asset: $name"
+            Invoke-WebRequest -Uri $pick.url -OutFile sdk_download -Headers (@{ Accept = 'application/octet-stream' } + $hdr)
+          } elseif ($url -match 'github\.com/([^/]+)/([^/]+)/releases/download/') {
+            $name = Split-Path ($url.Split('?')[0]) -Leaf
+            Write-Host "Baixando asset direto: $name"
+            Invoke-WebRequest -Uri $url -OutFile sdk_download -Headers $hdr
           } else {
             $name = Split-Path ($url.Split('?')[0]) -Leaf
-            Write-Host "Baixando: $url"
+            if (-not $name) { $name = 'sdk.zip' }
+            Write-Host "Baixando URL direta: $url"
             Invoke-WebRequest -Uri $url -OutFile sdk_download
           }
+
           $dest = Join-Path $env:RUNNER_TEMP 'airsdk'
           New-Item -ItemType Directory -Force $dest | Out-Null
-          if ($name -match '\.zip$') {
+          if ($name -match '\.zip$' -or (Get-Item sdk_download).Extension -eq '.zip') {
             Expand-Archive -Path sdk_download -DestinationPath $dest -Force
           } else {
             & "$env:SystemRoot\System32\tar.exe" -xf sdk_download -C $dest
             if ($LASTEXITCODE -ne 0) { throw 'falha ao extrair o SDK' }
           }
-          $f = Get-ChildItem -Path $dest -Recurse -Depth 3 -Filter air-sdk-description.xml | Select-Object -First 1
-          if (-not $f) { throw 'air-sdk-description.xml nao encontrado: esse arquivo nao e o AIR SDK' }
+          $f = Get-ChildItem -Path $dest -Recurse -Depth 4 -Filter air-sdk-description.xml | Select-Object -First 1
+          if (-not $f) { throw 'air-sdk-description.xml nao encontrado: arquivo nao e o AIR SDK' }
           $sdk = $f.DirectoryName
           Get-Content "$sdk\air-sdk-description.xml" | ForEach-Object { Write-Host $_ }
           Write-Host 'Pasta runtimes do SDK:'
@@ -82,7 +101,7 @@ jobs:
           elseif (Test-Path "$sdk\runtimes\air-captive\win64") { Write-Host 'OK: air-captive\win64 presente' }
           else { Write-Host 'AVISO: nao achei win64 no SDK' }
           if (-not (Test-Path "$sdk\runtimes\air\win")) {
-            Write-Host 'AVISO: este SDK nao tem runtimes\air\win. Se o empacotamento falhar, suba o "AIR SDK para Windows" (airsdk.harman.com) como release e use o link dele.'
+            Write-Host 'AVISO: este SDK nao tem runtimes\air\win.'
           }
           "AIR_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
