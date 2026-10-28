@@ -120,6 +120,10 @@ jobs:
           Remove-Item build -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force build\app | Out-Null
           $xml = (Get-Content app.xml -Raw).Replace('NS_VERSION', $ns).Replace('VERSION_NUMBER', "1.0.$env:RUN_NUM")
+                    $xml = $xml -replace '<supportedProfiles>\s*desktop\s*</supportedProfiles>', '<supportedProfiles>extendedDesktop</supportedProfiles>'
+          if ($xml -notmatch 'extendedDesktop') {
+            $xml = $xml -replace '<supportedProfiles>[^<]*</supportedProfiles>', '<supportedProfiles>extendedDesktop</supportedProfiles>'
+          }
           if ($xml -notmatch '<architecture>') {
             $xml = $xml.Replace('</supportedProfiles>', ('</supportedProfiles>' + [char]10 + '    <architecture>64</architecture>'))
           } else {
