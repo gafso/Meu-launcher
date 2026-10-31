@@ -192,6 +192,29 @@ jobs:
           }
           Get-ChildItem build\LegendPC | ForEach-Object { Write-Host "  $($_.Name)" }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Navegador do login (Chromium — LegendLogin.exe)
+        working-directory: ${{ env.PROJ }}/login-helper
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm install --no-audit --no-fund --no-save electron@31
+          if ($LASTEXITCODE -ne 0) { throw 'falha ao baixar o Electron' }
+          $dist = Join-Path (Get-Location) 'node_modules\electron\dist'
+          if (-not (Test-Path "$dist\electron.exe")) { throw 'electron.exe nao encontrado' }
+          $dest = Join-Path $env:PROJ 'build\LegendPC\login'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item "$dist\*" $dest -Recurse -Force
+          Rename-Item "$dest\electron.exe" 'LegendLogin.exe'
+          Remove-Item "$dest\resources\default_app.asar" -Force -ErrorAction SilentlyContinue
+          $app = Join-Path $dest 'resources\app'
+          New-Item -ItemType Directory -Force $app | Out-Null
+          Copy-Item main.js, package.json $app
+          Write-Host 'LegendLogin.exe empacotado em login/'
+          Get-ChildItem $dest | Select-Object -First 12 | ForEach-Object { Write-Host "  $($_.Name)" }
+
       - name: Instalador alternativo (.air, precisa do Adobe AIR no PC)
         continue-on-error: true
         working-directory: ${{ env.PROJ }}
