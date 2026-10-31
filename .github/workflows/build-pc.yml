@@ -125,9 +125,9 @@ jobs:
             $xml = $xml -replace '<supportedProfiles>[^<]*</supportedProfiles>', '<supportedProfiles>extendedDesktop</supportedProfiles>'
           }
           if ($xml -notmatch '<architecture>') {
-            $xml = $xml.Replace('</supportedProfiles>', ('</supportedProfiles>' + [char]10 + '    <architecture>64</architecture>'))
+            $xml = $xml.Replace('</supportedProfiles>', ('</supportedProfiles>' + [char]10 + '    <architecture>32</architecture>'))
           } else {
-            $xml = $xml -replace '<architecture>\s*\d+\s*</architecture>', '<architecture>64</architecture>'
+            $xml = $xml -replace '<architecture>\s*\d+\s*</architecture>', '<architecture>32</architecture>'
           }
           $xml | Set-Content 'build/app/app.xml' -Encoding utf8
           Write-Host 'app.xml architecture:'
@@ -147,24 +147,24 @@ jobs:
           $adtCfgDir = Join-Path $env:USERPROFILE '.airsdk'
           New-Item -ItemType Directory -Force $adtCfgDir | Out-Null
           @(
-            'DefaultArch=x64'
-            'OverrideArch=x64'
+            'DefaultArch=x86'
+            'OverrideArch=x86'
           ) | Set-Content (Join-Path $adtCfgDir 'adt.cfg') -Encoding ascii
           $sdkCfg = Join-Path $sdk 'lib\adt.cfg'
           try {
             @(
-              'DefaultArch=x64'
-              'OverrideArch=x64'
+              'DefaultArch=x86'
+              'OverrideArch=x86'
             ) | Set-Content $sdkCfg -Encoding ascii
             Write-Host "adt.cfg escrito em $adtCfgDir e $sdkCfg"
           } catch {
             Write-Host "aviso: nao gravou lib\adt.cfg ($($_.Exception.Message))"
           }
 
-          # Ordem: -target bundle -arch x64 (documentado pela Harman / fórum Starling)
+          # Ordem: -target bundle (documentado pela Harman / fórum Starling)
           & "$sdk\bin\adt.bat" -package `
             -storetype pkcs12 -keystore build\cert.p12 -storepass changeit -tsa none `
-            -target bundle -arch x64 `
+            -target bundle `
             build\LegendPC build\app\app.xml `
             -C build\app Main.swf -C build\app assets
           if ($LASTEXITCODE -ne 0) {
@@ -183,12 +183,12 @@ jobs:
           $br.Close(); $fs.Close()
           $hex = '0x{0:X4}' -f $machine
           Write-Host ("EXE: {0} | PE Machine={1}" -f $exe.FullName, $hex)
-          if ($machine -eq 0x8664) {
-            Write-Host 'OK: executavel e 64-bit (AMD64).'
-          } elseif ($machine -eq 0x14C) {
-            throw 'Ainda gerou 32-bit (PE Machine=0x14C). O SDK provavelmente nao tem runtime Windows x64, ou -arch foi ignorado. Use o AIR SDK Windows completo da Harman.'
+          if ($machine -eq 0x14C) {
+            Write-Host 'OK: executavel e 32-bit (x86) — login HTMLLoader estavel.'
+          } elseif ($machine -eq 0x8664) {
+            Write-Host 'AVISO: gerou 64-bit; login embutido pode falhar nos cliques. Preferimos 32-bit neste projeto.'
           } else {
-            Write-Host "AVISO: PE Machine inesperado ($hex). Verifique no Task Manager se aparece *32."
+            Write-Host "AVISO: PE Machine inesperado ($hex)."
           }
           Get-ChildItem build\LegendPC | ForEach-Object { Write-Host "  $($_.Name)" }
 
@@ -200,7 +200,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LegendPC-Windows-x64
+          name: LegendPC-Windows
           path: ${{ env.PROJ }}/build/LegendPC
 
       - uses: actions/upload-artifact@v4
