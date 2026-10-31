@@ -125,9 +125,9 @@ jobs:
             $xml = $xml -replace '<supportedProfiles>[^<]*</supportedProfiles>', '<supportedProfiles>extendedDesktop</supportedProfiles>'
           }
           if ($xml -notmatch '<architecture>') {
-            $xml = $xml.Replace('</supportedProfiles>', ('</supportedProfiles>' + [char]10 + '    <architecture>32</architecture>'))
+            $xml = $xml.Replace('</supportedProfiles>', ('</supportedProfiles>' + [char]10 + '    <architecture>64</architecture>'))
           } else {
-            $xml = $xml -replace '<architecture>\s*\d+\s*</architecture>', '<architecture>32</architecture>'
+            $xml = $xml -replace '<architecture>\s*\d+\s*</architecture>', '<architecture>64</architecture>'
           }
           $xml | Set-Content 'build/app/app.xml' -Encoding utf8
           Write-Host 'app.xml architecture:'
@@ -147,14 +147,14 @@ jobs:
           $adtCfgDir = Join-Path $env:USERPROFILE '.airsdk'
           New-Item -ItemType Directory -Force $adtCfgDir | Out-Null
           @(
-            'DefaultArch=x86'
-            'OverrideArch=x86'
+            'DefaultArch=x64'
+            'OverrideArch=x64'
           ) | Set-Content (Join-Path $adtCfgDir 'adt.cfg') -Encoding ascii
           $sdkCfg = Join-Path $sdk 'lib\adt.cfg'
           try {
             @(
-              'DefaultArch=x86'
-              'OverrideArch=x86'
+              'DefaultArch=x64'
+              'OverrideArch=x64'
             ) | Set-Content $sdkCfg -Encoding ascii
             Write-Host "adt.cfg escrito em $adtCfgDir e $sdkCfg"
           } catch {
@@ -164,7 +164,7 @@ jobs:
           # Ordem: -target bundle (documentado pela Harman / fórum Starling)
           & "$sdk\bin\adt.bat" -package `
             -storetype pkcs12 -keystore build\cert.p12 -storepass changeit -tsa none `
-            -target bundle `
+            -target bundle -arch x64 `
             build\LegendPC build\app\app.xml `
             -C build\app Main.swf -C build\app assets
           if ($LASTEXITCODE -ne 0) {
@@ -183,10 +183,10 @@ jobs:
           $br.Close(); $fs.Close()
           $hex = '0x{0:X4}' -f $machine
           Write-Host ("EXE: {0} | PE Machine={1}" -f $exe.FullName, $hex)
-          if ($machine -eq 0x14C) {
-            Write-Host 'OK: executavel e 32-bit (x86) — login HTMLLoader estavel.'
-          } elseif ($machine -eq 0x8664) {
-            Write-Host 'AVISO: gerou 64-bit; login embutido pode falhar nos cliques. Preferimos 32-bit neste projeto.'
+          if ($machine -eq 0x8664) {
+            Write-Host 'OK: executavel e 64-bit (AMD64).'
+          } elseif ($machine -eq 0x14C) {
+            throw 'Gerou 32-bit (0x14C). Esperado x64.'
           } else {
             Write-Host "AVISO: PE Machine inesperado ($hex)."
           }
@@ -200,7 +200,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LegendPC-Windows
+          name: LegendPC-Windows-x64
           path: ${{ env.PROJ }}/build/LegendPC
 
       - uses: actions/upload-artifact@v4
