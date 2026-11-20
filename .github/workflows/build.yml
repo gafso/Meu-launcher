@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sdk_url:
-        description: "Link da release do AIR SDK 51"
+        description: "Release do AIR SDK 51 (página da release OU link direto)"
         required: true
         default: "https://github.com/gafso/sdk/releases/tag/Sdk"
 
@@ -16,54 +16,76 @@ jobs:
 
       - name: Extrair projeto
         run: |
+          set -e
           mkdir -p proj
           if [ -f orbit.zip ]; then
             unzip -q -o orbit.zip -d proj
           elif [ -f launcher.zip ]; then
             unzip -q -o launcher.zip -d proj
           else
-            cp -r . proj/ || true
+            cp -r . proj/ 2>/dev/null || true
           fi
-          B=$(find proj -name build.sh | head -1)
+          B=$(find proj -name build.sh -not -path '*/.git/*' | head -1)
           if [ -z "$B" ]; then
-            echo "build.sh nao encontrado"
-            find proj | head -30
+            echo "ERRO: build.sh não encontrado"
+            find proj -maxdepth 3 | head -40
             exit 1
           fi
-          echo "PROJ=$(dirname $B)" >> $GITHUB_ENV
+          echo "PROJ=$(dirname "$B")" >> "$GITHUB_ENV"
+          echo "Projeto em: $(dirname "$B")"
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Baixar AIR SDK
+      - name: Baixar o AIR SDK
         env:
           SDK_URL: ${{ github.event.inputs.sdk_url }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           URL="$SDK_URL"
-          if echo "$URL" | grep -q "github.com/.*/releases/tag/"; then
-            REPO=$(echo "$URL" | sed -E 's|https://github.com/([^/]+)/([^/]+)/releases/tag/.*|\1/\2|')
-            TAG=$(echo "$URL" | sed -E 's|.*/tag/([^/?#]+).*|\1|')
-            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/tags/$TAG" -o rel.json
-            URL=$(jq -r '.assets[] | select(.name | test("zip|tar.gz")) | .url' rel.json | head -1)
+          # Se for a página de uma release, acha sozinho o arquivo do SDK
+          if [[ "$URL" =~ github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+) ]]; then
+            api="https://api.github.com/repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/releases/tags/${BASH_REMATCH[3]}"
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" -o rel.json
+            echo "Arquivos da release:"
+            jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"' rel.json
+            URL=$(jq -r '[.assets[] | select(.name | test("\\.(zip|tar\\.gz|tgz|tar\\.bz2|tbz2)$"; "i"))] | sort_by(-.size) | .[0].url // empty' rel.json)
+            [ -n "$URL" ] || { echo "ERRO: nenhum .zip/.tar na release"; exit 1; }
           fi
-          curl -L --fail -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o sdk.zip "$URL" || curl -L --fail -o sdk.zip "$URL"
-          mkdir -p sdk && unzip -q sdk.zip -d sdk
-          echo "AIR_SDK=$(find sdk -name adt.jar | head -1 | xargs dirname | xargs dirname)" >> $GITHUB_ENV
+          echo "Baixando: $URL"
+          if [[ "$URL" == https://api.github.com/* ]]; then
+            curl -L --fail -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o sdk_download "$URL"
+          else
+            curl -L --fail -o sdk_download "$URL"
+          fi
+          mkdir -p "$RUNNER_TEMP/airsdk"
+          unzip -q sdk_download -d "$RUNNER_TEMP/airsdk" || tar -xf sdk_download -C "$RUNNER_TEMP/airsdk"
+          if [ ! -f "$RUNNER_TEMP/airsdk/air-sdk-description.xml" ]; then
+            f=$(find "$RUNNER_TEMP/airsdk" -maxdepth 3 -name air-sdk-description.xml | head -1)
+            [ -n "$f" ] || { echo "ERRO: não é o AIR SDK"; exit 1; }
+            d=$(dirname "$f")
+            mv "$d" "$RUNNER_TEMP/airsdk_real" && rm -rf "$RUNNER_TEMP/airsdk" && mv "$RUNNER_TEMP/airsdk_real" "$RUNNER_TEMP/airsdk"
+          fi
+          echo "AIR_SDK=$RUNNER_TEMP/airsdk" >> "$GITHUB_ENV"
 
-      - name: Setup Android
-        uses: android-actions/setup-android@v3
+      - name: Localizar android.jar
+        run: |
+          jar_path=$(ls -d "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)
+          echo "Usando $jar_path"
+          echo "ANDROID_JAR=$jar_path" >> "$GITHUB_ENV"
 
       - name: Compilar
         run: |
-          export ANDROID_JAR=$(find $ANDROID_HOME -name android.jar | head -1)
-          cd $PROJ
+          set -e
+          cd "$PROJ"
           chmod +x build.sh
           ./build.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: Orbit-apk
           path: ${{ env.PROJ }}/build/Orbit.apk
