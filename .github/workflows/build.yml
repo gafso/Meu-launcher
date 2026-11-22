@@ -13,21 +13,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Extrair o projeto
         run: |
-          # Aceita o launcher.zip na raiz do repositório, ou os arquivos soltos / em subpasta.
-          if [ -f launcher.zip ]; then
-            mkdir -p proj && unzip -q -o launcher.zip -d proj
+          # Usa o .zip do projeto que foi enviado por ÚLTIMO ao repositório (o celular costuma baixar como
+          # "launcher (1).zip", "launcher (2).zip"... e o nome antigo ficava valendo). Sem zip: usa os arquivos soltos.
+          Z=""; best=0
+          for f in ./*.zip; do
+            [ -f "$f" ] || continue
+            unzip -l "$f" 2>/dev/null | grep -q "build.sh" || continue
+            t=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0); [ -n "$t" ] || t=0
+            echo "zip encontrado: $f (enviado em $t)"
+            if [ "$t" -ge "$best" ]; then best=$t; Z="$f"; fi
+          done
+          if [ -n "$Z" ]; then
+            echo "USANDO O ZIP: $Z"
+            mkdir -p proj && unzip -q -o "$Z" -d proj
           else
+            echo "Nenhum zip de projeto: usando os arquivos soltos"
             mkdir -p proj && cp -r . proj/ 2>/dev/null || true
           fi
           B=$(find proj -name build.sh -not -path '*/.git/*' | head -1)
           if [ -z "$B" ]; then
             echo "ERRO: build.sh não encontrado. Arquivos que existem no repositório:"
             find . -maxdepth 3 -not -path './.git/*' | head -80
-            echo "--- dentro do launcher.zip ---"
-            unzip -l launcher.zip 2>&1 | head -60
             exit 1
           fi
           D=$(dirname "$B")
@@ -117,6 +128,7 @@ jobs:
           echo "### Assinatura do APK" >> "$GITHUB_STEP_SUMMARY"
           keytool -printcert -jarfile "${{ env.PROJ }}/build/MeuLauncher.apk" 2>&1 | grep -E "Owner|SHA256" | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo "Versão do app: 1.0.${{ github.run_number }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -o 'VERSION:String = "[^"]*"' "${{ env.PROJ }}/src/Main.as" | sed 's/^/Versão no código (aparece no canto da tela): /' | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
