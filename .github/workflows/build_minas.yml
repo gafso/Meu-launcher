@@ -1,0 +1,136 @@
+name: Build APK Minas
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_url:
+        description: "Release do AIR SDK 51 (página da release OU link direto do arquivo, qualquer nome)"
+        required: true
+        default: "https://github.com/gafso/sdk/releases/tag/Sdk"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extrair o projeto
+        run: |
+          # Usa o .zip do projeto que foi enviado por ÚLTIMO ao repositório (o celular costuma baixar como
+          # "launcher (1).zip", "launcher (2).zip"... e o nome antigo ficava valendo). Sem zip: usa os arquivos soltos.
+          Z=""; best=0
+          for f in ./*.zip; do
+            [ -f "$f" ] || continue
+            unzip -l "$f" 2>/dev/null | grep -q "build.sh" || continue
+            t=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0); [ -n "$t" ] || t=0
+            echo "zip encontrado: $f (enviado em $t)"
+            if [ "$t" -ge "$best" ]; then best=$t; Z="$f"; fi
+          done
+          if [ -n "$Z" ]; then
+            echo "USANDO O ZIP: $Z"
+            mkdir -p proj && unzip -q -o "$Z" -d proj
+          else
+            echo "Nenhum zip de projeto: usando os arquivos soltos"
+            mkdir -p proj && cp -r . proj/ 2>/dev/null || true
+          fi
+          B=$(find proj -name build.sh -not -path '*/.git/*' | head -1)
+          if [ -z "$B" ]; then
+            echo "ERRO: build.sh não encontrado. Arquivos que existem no repositório:"
+            find . -maxdepth 3 -not -path './.git/*' | head -80
+            exit 1
+          fi
+          D=$(dirname "$B")
+          echo "Projeto em: $D"
+          echo "PROJ=$GITHUB_WORKSPACE/$D" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Baixar o AIR SDK
+        env:
+          SDK_URL: ${{ github.event.inputs.sdk_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          URL="$SDK_URL"
+          # Se for a página de uma release, acha sozinho o arquivo do SDK (qualquer nome).
+          if [[ "$URL" =~ github\.com/([^/]+)/([^/]+)/releases/tag/([^/?#]+) ]]; then
+            api="https://api.github.com/repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/releases/tags/${BASH_REMATCH[3]}"
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" -o rel.json
+            echo "Arquivos da release:"
+            jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"' rel.json
+            URL=$(jq -r '[.assets[] | select(.name | test("\\.(zip|tar\\.gz|tgz|tar\\.bz2|tbz2)$"; "i"))] | sort_by(-.size) | .[0].url // empty' rel.json)
+            [ -n "$URL" ] || { echo "ERRO: nenhum .zip/.tar na release"; exit 1; }
+          fi
+          echo "Baixando: $URL"
+          NAME=$(basename "${URL%%\?*}")
+          if [[ "$URL" == https://api.github.com/* ]]; then
+            curl -L --fail -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "sdk_download" "$URL" || { echo "ERRO: 404/acesso negado em $URL (release apagada, repositório privado ou link errado)"; exit 1; }
+          else
+            curl -L --fail -o "sdk_download" "$URL" || { echo "ERRO: não consegui baixar $URL (404 = link errado, release apagada ou repositório privado)"; exit 1; }
+          fi
+          mkdir -p "$RUNNER_TEMP/airsdk"
+          case "${NAME,,}" in
+            *.tar.bz2|*.tbz2|*.tar.gz|*.tgz) tar -xf sdk_download -C "$RUNNER_TEMP/airsdk" ;;
+            *) unzip -q sdk_download -d "$RUNNER_TEMP/airsdk" ;;
+          esac
+          # Se o arquivo tiver uma pasta por dentro, entra nela.
+          if [ ! -f "$RUNNER_TEMP/airsdk/air-sdk-description.xml" ]; then
+            f=$(find "$RUNNER_TEMP/airsdk" -maxdepth 3 -name air-sdk-description.xml | head -1)
+            [ -n "$f" ] || { echo "ERRO: air-sdk-description.xml não encontrado: esse arquivo não é o AIR SDK"; exit 1; }
+            d=$(dirname "$f")
+            mv "$d" "$RUNNER_TEMP/airsdk_real" && rm -rf "$RUNNER_TEMP/airsdk" && mv "$RUNNER_TEMP/airsdk_real" "$RUNNER_TEMP/airsdk"
+          fi
+          cat "$RUNNER_TEMP/airsdk/air-sdk-description.xml"
+          echo "AIR_SDK=$RUNNER_TEMP/airsdk" >> "$GITHUB_ENV"
+
+      - name: Localizar android.jar
+        run: |
+          jar_path=$(ls -d "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)
+          echo "Usando $jar_path"
+          echo "ANDROID_JAR=$jar_path" >> "$GITHUB_ENV"
+
+      - name: Chave de assinatura
+        working-directory: ${{ env.PROJ }}
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: |
+          # Se você definir os secrets KEYSTORE_B64 e KEYSTORE_PASS, a mesma chave é usada
+          # sempre (necessário para atualizar o app por cima sem desinstalar).
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > keystore.p12
+            echo "STOREPASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+          elif [ -f keystore.p12 ]; then
+            # Chave fixa que vem junto do projeto: todo APK novo é assinado com ela,
+            # então o Android instala por cima do antigo (sem desinstalar).
+            echo "Usando a keystore.p12 do projeto"
+            echo "STOREPASS=meulauncher" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -keystore keystore.p12 -storetype PKCS12 -storepass changeit \
+              -keypass changeit -alias launcher -keyalg RSA -keysize 2048 -validity 9000 \
+              -dname "CN=MeuLauncher"
+            echo "STOREPASS=changeit" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compilar
+        working-directory: ${{ env.PROJ }}
+        env:
+          VERSION_NUMBER: 1.0.${{ github.run_number }}
+        run: bash build.sh
+
+      - name: Assinatura do APK (a impressão digital tem que ser a MESMA em todo build)
+        run: |
+          echo "### Assinatura do APK" >> "$GITHUB_STEP_SUMMARY"
+          keytool -printcert -jarfile "${{ env.PROJ }}/build/LegendMinas.apk" 2>&1 | grep -E "Owner|SHA256" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo "Versão do app: 1.0.${{ github.run_number }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -o 'VERSION:String = "[^"]*"' "${{ env.PROJ }}/src/Main.as" | sed 's/^/Versão no código (aparece no canto da tela): /' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LegendMinas-apk
+          path: ${{ env.PROJ }}/build/LegendMinas.apk
